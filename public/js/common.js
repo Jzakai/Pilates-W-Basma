@@ -42,12 +42,29 @@ function fmtDay(local, opts = { weekday: 'long', day: 'numeric', month: 'long' }
   return new Intl.DateTimeFormat('en-GB', { ...opts, timeZone: 'UTC' }).format(parseLocal(local).date);
 }
 
+function clock12(minutes) {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  return { text: `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''}`, ampm: h >= 12 ? 'pm' : 'am' };
+}
+
+// "2026-10-04T19:15" -> "7:15 pm"
 function fmtTime(local) {
-  return parseLocal(local).time;
+  const [h, m] = parseLocal(local).time.split(':').map(Number);
+  const t = clock12(h * 60 + m);
+  return `${t.text} ${t.ampm}`;
+}
+
+// "2026-10-04T19:15", 60 -> "7:15–8:15 pm"
+function fmtRange(local, durationMinutes) {
+  const [h, m] = parseLocal(local).time.split(':').map(Number);
+  const a = clock12(h * 60 + m);
+  const b = clock12(h * 60 + m + durationMinutes);
+  return a.ampm === b.ampm ? `${a.text}–${b.text} ${b.ampm}` : `${a.text} ${a.ampm}–${b.text} ${b.ampm}`;
 }
 
 function fmtClass(session) {
-  return `${fmtDay(session.startsAt)} · ${fmtTime(session.startsAt)} · ${session.durationMinutes} min`;
+  return `${fmtDay(session.startsAt)} · ${fmtRange(session.startsAt, session.durationMinutes)}`;
 }
 
 function param(name) {
@@ -60,7 +77,7 @@ function loadStudio() {
     document.querySelectorAll('[data-studio-name]').forEach((n) => (n.textContent = studio.name));
     if (studio.demoPayments && !document.querySelector('.demo-banner')) {
       document.body.prepend(el('div', { class: 'demo-banner' },
-        'Demo mode — payments are simulated. Connect Stripe to take real payments.'));
+        'Demo mode — online payments are simulated until the payment gateway is connected.'));
     }
     const footer = document.querySelector('footer .contact');
     if (footer) {

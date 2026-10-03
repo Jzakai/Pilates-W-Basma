@@ -22,8 +22,10 @@ async function load(attempt = 0) {
     return panel.replaceChildren(el('h2', {}, 'Booking not found'), el('p', {}, err.message));
   }
 
+  const transfer = b.status === 'pending' && b.paymentMethod === 'transfer';
+
   // Just back from the payment page, waiting for the gateway to confirm.
-  if (b.status === 'pending' && param('new') && attempt < 10) {
+  if (b.status === 'pending' && !transfer && param('new') && attempt < 10) {
     panel.replaceChildren(el('div', { class: 'icon muted' }, '…'), el('h2', {}, 'Confirming your payment'),
       el('p', {}, 'This only takes a moment.'));
     return setTimeout(() => load(attempt + 1), 2000);
@@ -41,6 +43,13 @@ async function load(attempt = 0) {
     } else if (!b.session.cancelled) {
       nodes.push(el('p', { class: 'fine' }, `Online cancellation closes ${b.cancellationHours} hours before class — please contact the studio if you can't make it.`));
     }
+  } else if (transfer) {
+    nodes.push(el('div', { class: 'icon warn' }, '⏳'), el('h2', {}, 'Spot reserved — payment needed'),
+      el('p', {}, `To confirm your spot, please send ${b.amount} by ${b.payBy}. We've emailed these details to ${b.email}.`),
+      el('div', { class: 'transfer-box' }, b.transferInstructions),
+      el('p', { class: 'fine' }, "Your booking is confirmed once the payment is received — you'll get a confirmation email. If it isn't received in time, the spot is released to the next person."),
+      details(b));
+    if (b.canCancel) nodes.push(el('button', { class: 'btn danger block', onclick: () => cancel(b) }, 'Cancel my reservation'));
   } else if (b.status === 'cancelled') {
     nodes.push(el('div', { class: 'icon muted' }, '×'), el('h2', {}, 'Booking cancelled'),
       el('p', {}, b.refunded ? 'Your payment has been refunded. It can take 5–10 days to appear on your statement.' : 'This booking has been cancelled.'),

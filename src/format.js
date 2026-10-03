@@ -26,8 +26,25 @@ function formatMoney(minor, currency) {
   }
 }
 
-// "2026-10-05T18:00" -> "Monday 5 October 2026, 18:00"
-function formatClassTime(local) {
+function clock12(minutes) {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  return { text: `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''}`, pm: h >= 12 };
+}
+
+// ("19:15", 60) -> "7:15–8:15 pm"
+function formatTimeRange(time, durationMin) {
+  const [h, m] = time.split(':').map(Number);
+  const start = clock12(h * 60 + m);
+  const end = clock12(h * 60 + m + (durationMin || 0));
+  if (!durationMin) return `${start.text} ${start.pm ? 'pm' : 'am'}`;
+  return start.pm === end.pm
+    ? `${start.text}–${end.text} ${end.pm ? 'pm' : 'am'}`
+    : `${start.text} ${start.pm ? 'pm' : 'am'}–${end.text} ${end.pm ? 'pm' : 'am'}`;
+}
+
+// ("2026-10-04T19:15", 60) -> "Sunday 4 October 2026, 7:15–8:15 pm"
+function formatClassTime(local, durationMin) {
   const [date, time] = local.split('T');
   const [y, m, d] = date.split('-').map(Number);
   const dayLabel = new Intl.DateTimeFormat('en-GB', {
@@ -37,7 +54,7 @@ function formatClassTime(local) {
     year: 'numeric',
     timeZone: 'UTC',
   }).format(new Date(Date.UTC(y, m - 1, d)));
-  return `${dayLabel}, ${time}`;
+  return `${dayLabel}, ${formatTimeRange(time, durationMin)}`;
 }
 
-module.exports = { toMinor, formatMoney, formatClassTime, minorUnitFactor };
+module.exports = { toMinor, formatMoney, formatClassTime, formatTimeRange, minorUnitFactor };

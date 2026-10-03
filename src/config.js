@@ -44,7 +44,9 @@ function loadSchedule(file = process.env.SCHEDULE_PATH || path.join(ROOT, 'sched
     studio: {
       name: studio.name || 'Pilates Studio',
       instructor: studio.instructor || '',
+      eyebrow: studio.eyebrow || '',
       tagline: studio.tagline || '',
+      notice: studio.notice || '',
       about: studio.about || '',
       location: studio.location || '',
       contactEmail: studio.contactEmail || '',
@@ -53,6 +55,10 @@ function loadSchedule(file = process.env.SCHEDULE_PATH || path.join(ROOT, 'sched
       timezone: studio.timezone || 'UTC',
       currency: (studio.currency || 'usd').toLowerCase(),
       weeksAhead: studio.weeksAhead || 4,
+      bankTransfer: {
+        enabled: Boolean(studio.bankTransfer?.enabled),
+        instructions: studio.bankTransfer?.instructions || '',
+      },
     },
     classes,
   };
@@ -63,9 +69,15 @@ const env = process.env;
 const config = {
   root: ROOT,
   port: Number(env.PORT) || 3000,
-  baseUrl: (env.BASE_URL || `http://localhost:${Number(env.PORT) || 3000}`).replace(/\/$/, ''),
+  // RENDER_EXTERNAL_URL is set automatically on Render.
+  baseUrl: (env.BASE_URL || env.RENDER_EXTERNAL_URL || `http://localhost:${Number(env.PORT) || 3000}`).replace(/\/$/, ''),
   adminPassword: env.ADMIN_PASSWORD || '',
   databasePath: env.DATABASE_PATH || path.join(ROOT, 'data', 'bookings.db'),
+  // moyasar | stripe | demo. Defaults to whichever gateway has a key configured.
+  paymentProvider: (env.PAYMENT_PROVIDER ||
+    (env.MOYASAR_SECRET_KEY ? 'moyasar' : env.STRIPE_SECRET_KEY ? 'stripe' : 'demo')).toLowerCase(),
+  moyasarSecretKey: env.MOYASAR_SECRET_KEY || '',
+  moyasarWebhookSecret: env.MOYASAR_WEBHOOK_SECRET || '',
   stripeSecretKey: env.STRIPE_SECRET_KEY || '',
   stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET || '',
   smtp: {
@@ -77,6 +89,8 @@ const config = {
   emailFrom: env.EMAIL_FROM || 'bookings@example.com',
   adminNotifyEmail: env.ADMIN_NOTIFY_EMAIL || '',
   waitlistOfferHours: Number(env.WAITLIST_OFFER_HOURS) || 12,
+  // How long a bank-transfer booking holds its spot while waiting for the money.
+  transferHoldHours: Number(env.TRANSFER_HOLD_HOURS) || 24,
   cancellationHours: env.CANCELLATION_HOURS === undefined ? 12 : Number(env.CANCELLATION_HOURS),
   refundOnCancel: (env.REFUND_ON_CANCEL || 'true').toLowerCase() !== 'false',
   // Seat hold while the customer is on the payment page. Stripe Checkout sessions

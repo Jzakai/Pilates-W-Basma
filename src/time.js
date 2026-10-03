@@ -31,4 +31,22 @@ function upcomingDates(nowMs, timeZone, days) {
   return out;
 }
 
-module.exports = { localString, upcomingDates };
+// "YYYY-MM-DDTHH:MM" in the studio timezone -> epoch ms.
+function localToEpoch(local, timeZone) {
+  const [date, time] = local.split('T');
+  const [y, m, d] = date.split('-').map(Number);
+  const [hh, mm] = time.split(':').map(Number);
+  const asUtc = Date.UTC(y, m - 1, d, hh, mm);
+  // Shift by the zone's offset at that moment (twice, to settle across DST changes).
+  let guess = asUtc;
+  for (let i = 0; i < 2; i++) {
+    const seen = localString(guess, timeZone);
+    const [sd, st] = seen.split('T');
+    const [sy, sm, sdd] = sd.split('-').map(Number);
+    const [sh, smin] = st.split(':').map(Number);
+    guess += asUtc - Date.UTC(sy, sm - 1, sdd, sh, smin);
+  }
+  return guess;
+}
+
+module.exports = { localString, localToEpoch, upcomingDates };
