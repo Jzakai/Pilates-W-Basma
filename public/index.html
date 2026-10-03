@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pilates w Basma — Book a class</title>
+  <meta name="description" content="Book mat Pilates and yoga classes with Basma. See the timetable, reserve your spot and pay online.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" data-studio-name>Pilates w Basma</a>
+      <nav class="nav">
+        <a href="#about" class="hide-sm">About</a>
+        <a href="#schedule">Timetable</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="hero wrap">
+      <div class="eyebrow">Pilates · Yoga · Small groups</div>
+      <h1 id="hero-title" data-studio-name>Pilates w Basma</h1>
+      <p id="tagline"></p>
+      <a class="btn" href="#schedule">See classes &amp; book</a>
+    </div>
+
+    <section class="about" id="about">
+      <div class="wrap">
+        <h2>About the classes</h2>
+        <p id="about-text"></p>
+        <div class="grid">
+          <div><strong>Book online</strong><span>Pick a class, reserve your mat and pay securely in under a minute.</span></div>
+          <div><strong>Class full?</strong><span>Join the waiting list — if a spot opens up you'll get an email with a link to claim it.</span></div>
+          <div><strong>Plans change</strong><span id="cancel-policy">Cancel online from your confirmation email.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="schedule">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Timetable</h2>
+          <p id="location"></p>
+        </div>
+        <div class="week-tabs" role="tablist" id="week-tabs"></div>
+        <div id="sessions"><div class="empty">Loading classes…</div></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div>&copy; <span id="year"></span> <span data-studio-name>Pilates w Basma</span></div>
+      <div class="contact"></div>
+    </div>
+  </footer>
+
+  <dialog id="book-dialog">
+    <form class="modal-body" id="book-form" method="dialog" novalidate>
+      <button type="button" class="modal-close" aria-label="Close" data-close>&times;</button>
+      <h3 id="dialog-title">Book your spot</h3>
+      <div class="modal-class" id="dialog-class"></div>
+      <div id="dialog-notice"></div>
+      <label>Full name
+        <input name="name" autocomplete="name" required maxlength="100">
+      </label>
+      <label>Email
+        <input name="email" type="email" autocomplete="email" required maxlength="200">
+      </label>
+      <label>Phone <span class="opt">(optional)</span>
+        <input name="phone" type="tel" autocomplete="tel" maxlength="40">
+      </label>
+      <label id="notes-field">Anything I should know? <span class="opt">(injuries, pregnancy, first class…)</span>
+        <textarea name="notes" maxlength="500"></textarea>
+      </label>
+      <button class="btn block" type="submit" id="dialog-submit">Continue to payment</button>
+      <p class="fine" id="dialog-fine" style="margin-top:12px"></p>
+    </form>
+  </dialog>
+
+  <script src="/js/common.js"></script>
+  <script src="/js/home.js"></script>
+</body>
+</html>

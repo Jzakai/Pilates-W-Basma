@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Studio dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+  <style>
+    .admin { padding: 32px 16px 64px; }
+    .admin-grid { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 24px; align-items: start; }
+    @media (max-width: 800px) { .admin-grid { grid-template-columns: 1fr; } }
+    .list { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+    .list button { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 12px 16px; border-bottom: 1px solid var(--line); cursor: pointer; }
+    .list button:hover { background: var(--bg); }
+    .list button[aria-current="true"] { background: var(--accent-soft); }
+    .list .row1 { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 0.95rem; }
+    .list .row2 { color: var(--muted); font-size: 0.85rem; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .card h3 { margin-bottom: 12px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    td .sub { color: var(--muted); font-size: 0.82rem; }
+    .inline-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
+    .inline-form label { margin: 0; flex: 1 1 140px; }
+    .stats { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 8px; }
+    .stats div { font-size: 0.85rem; color: var(--muted); }
+    .stats strong { display: block; font-size: 1.5rem; color: var(--ink); font-family: var(--serif); }
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" data-studio-name>Pilates w Basma</a>
+      <nav class="nav"><a href="/">View site</a></nav>
+    </div>
+  </header>
+  <main class="wrap admin">
+    <div class="toolbar">
+      <h2 style="margin:0">Classes</h2>
+      <label style="margin:0;font-weight:500"><input type="checkbox" id="show-past" style="display:inline;width:auto;margin:0 6px 0 0">Show past classes</label>
+    </div>
+    <div class="admin-grid">
+      <div class="list" id="session-list"><p style="padding:16px">Loading…</p></div>
+      <div id="detail"><div class="empty">Select a class to see bookings and the waiting list.</div></div>
+    </div>
+  </main>
+  <script src="/js/common.js"></script>
+  <script src="/js/admin.js"></script>
+</body>
+</html>

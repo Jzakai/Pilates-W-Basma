@@ -1,0 +1,48 @@
+{
+  "_readme": "Edit this file to change the studio details and the weekly class timetable. Times are 24h (HH:MM) in the studio timezone. Prices are in the main currency unit (e.g. 15 = 15.00). Each class needs a unique 'key' — if you change a class's time, give it a new key so existing bookings are not affected.",
+  "studio": {
+    "name": "Pilates w Basma",
+    "instructor": "Basma",
+    "tagline": "Mat Pilates & Yoga classes in small groups — strengthen, lengthen, breathe.",
+    "about": "Small-group mat Pilates and yoga classes focused on core strength, posture, flexibility and mindful movement. All levels welcome — every exercise comes with modifications so you can work at your own pace.",
+    "location": "Studio address — edit in schedule.json",
+    "contactEmail": "hello@example.com",
+    "contactPhone": "",
+    "instagram": "",
+    "timezone": "UTC",
+    "currency": "usd",
+    "weeksAhead": 4
+  },
+  "classes": [
+    {
+      "key": "mon-1800-mat-pilates",
+      "title": "Mat Pilates",
+      "day": "Monday",
+      "time": "18:00",
+      "durationMinutes": 60,
+      "capacity": 10,
+      "price": 10,
+      "description": "Full-body mat Pilates for all levels."
+    },
+    {
+      "key": "wed-1800-mat-pilates",
+      "title": "Mat Pilates",
+      "day": "Wednesday",
+      "time": "18:00",
+      "durationMinutes": 60,
+      "capacity": 10,
+      "price": 10,
+      "description": "Full-body mat Pilates for all levels."
+    },
+    {
+      "key": "sat-1000-yoga-flow",
+      "title": "Yoga Flow",
+      "day": "Saturday",
+      "time": "10:00",
+      "durationMinutes": 60,
+      "capacity": 10,
+      "price": 10,
+      "description": "A gentle vinyasa flow to stretch, strengthen and unwind."
+    }
+  ]
+}
