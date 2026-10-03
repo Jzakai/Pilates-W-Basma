@@ -89,6 +89,16 @@ All the gateway code lives in `src/payments.js` behind a small interface (`creat
 
 Fill in the `SMTP_*` settings. Most email providers work: Gmail with an app password, Zoho, Brevo, Mailgun and so on. Set `ADMIN_NOTIFY_EMAIL` to get an email for every new booking.
 
+## Free test deploy (Render)
+
+`render.yaml` sets the site up on Render's free plan, in demo mode with no keys needed:
+
+1. Sign up at https://render.com with GitHub.
+2. Go to **New → Blueprint** and pick this repository and branch.
+3. Enter a dashboard password when Render asks for `ADMIN_PASSWORD`, then click **Apply**.
+
+The free plan sleeps after about 15 minutes idle, so the first visit afterwards takes up to a minute. Its disk is wiped on every restart or deploy, so it is only for testing. Emails appear under the service's **Logs** tab.
+
 ## Deploying
 
 The app is a single Node process with a SQLite file, so any host that runs Node and keeps a persistent disk will work. Examples are Render, Railway, Fly.io or a small VPS.

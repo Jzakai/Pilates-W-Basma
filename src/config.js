@@ -69,7 +69,8 @@ const env = process.env;
 const config = {
   root: ROOT,
   port: Number(env.PORT) || 3000,
-  baseUrl: (env.BASE_URL || `http://localhost:${Number(env.PORT) || 3000}`).replace(/\/$/, ''),
+  // RENDER_EXTERNAL_URL is set automatically on Render.
+  baseUrl: (env.BASE_URL || env.RENDER_EXTERNAL_URL || `http://localhost:${Number(env.PORT) || 3000}`).replace(/\/$/, ''),
   adminPassword: env.ADMIN_PASSWORD || '',
   databasePath: env.DATABASE_PATH || path.join(ROOT, 'data', 'bookings.db'),
   // moyasar | stripe | demo. Defaults to whichever gateway has a key configured.
