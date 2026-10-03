@@ -25,15 +25,16 @@ CREATE TABLE IF NOT EXISTS bookings (
   name                TEXT NOT NULL,
   email               TEXT NOT NULL,
   phone               TEXT NOT NULL DEFAULT '',
+  first_time          TEXT NOT NULL DEFAULT '',  -- yes | no | '' (unknown)
   notes               TEXT NOT NULL DEFAULT '',
   status              TEXT NOT NULL,          -- pending | confirmed | cancelled | expired
   token               TEXT NOT NULL UNIQUE,   -- secret for the customer's manage-booking link
   amount_minor        INTEGER NOT NULL,
   currency            TEXT NOT NULL,
   hold_expires_at     INTEGER,                -- epoch ms, only while pending
-  payment_provider    TEXT NOT NULL,          -- stripe | demo | free | manual
+  payment_provider    TEXT NOT NULL,          -- moyasar | stripe | demo | transfer | free | manual
   checkout_id         TEXT,
-  payment_ref         TEXT,                   -- Stripe PaymentIntent id
+  payment_ref         TEXT,                   -- gateway payment id (refunds use it)
   refunded            INTEGER NOT NULL DEFAULT 0,
   waitlist_id         INTEGER REFERENCES waitlist(id),
   created_at          INTEGER NOT NULL,
@@ -48,6 +49,8 @@ CREATE TABLE IF NOT EXISTS waitlist (
   name                TEXT NOT NULL,
   email               TEXT NOT NULL,
   phone               TEXT NOT NULL DEFAULT '',
+  first_time          TEXT NOT NULL DEFAULT '',
+  notes               TEXT NOT NULL DEFAULT '',
   status              TEXT NOT NULL,          -- waiting | offered | claiming | booked | expired | removed
   token               TEXT NOT NULL UNIQUE,   -- secret for the claim / leave-waitlist link
   offer_expires_at    INTEGER,                -- epoch ms
@@ -61,7 +64,19 @@ function openDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+// Adds columns introduced after a database was first created.
+function migrate(db) {
+  const add = (table, column, ddl) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  add('bookings', 'first_time', "first_time TEXT NOT NULL DEFAULT ''");
+  add('waitlist', 'first_time', "first_time TEXT NOT NULL DEFAULT ''");
+  add('waitlist', 'notes', "notes TEXT NOT NULL DEFAULT ''");
 }
 
 // Runs fn inside a transaction. Nested calls join the outer transaction.

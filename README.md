@@ -1,15 +1,17 @@
 # Pilates w Basma: class booking website
 
-A booking website for a Pilates and yoga instructor. Clients see the weekly timetable, book a spot and pay online. When a class is full they can join a waiting list.
+A booking website for Basma's women-only Pilates classes at KAUST (Harbor Fitness Studio). Clients see the timetable, book a spot and pay online. When a class is full they can join a waiting list.
 
 ## Features
 
 - **Timetable**: weekly classes are set in `schedule.json`. Dates are created automatically for the next few weeks, with live "spots left" counts.
-- **Online booking and payment**: clients pay through Stripe Checkout (cards, Apple Pay and Google Pay). Their seat is held for 35 minutes while they pay.
+- **Online booking and payment**: clients enter their name, email, phone/WhatsApp, whether it's their first Pilates class, and any injuries or comments. They then pay through **Moyasar** (mada, Visa/Mastercard, Apple Pay, STC Pay). Their seat is held for 35 minutes while they pay.
+- **Bank transfer / STC Pay option** (can be switched off): the client reserves a spot and gets the bank details. The spot is held for `TRANSFER_HOLD_HOURS`, but never past the start of class. Basma clicks **Mark paid** in the dashboard when the money arrives, and the client gets a confirmation.
 - **Waiting list**: when a class is full, clients can join the waiting list. If a spot opens up (a cancellation, an unpaid hold that expires, or a capacity increase), the first person on the list gets an email with a link to claim it. The spot is held for them for `WAITLIST_OFFER_HOURS`. If they don't claim it in time, it moves to the next person automatically.
 - **Self-service cancellation**: every confirmation email has a link to view or cancel the booking. Clients can cancel up to `CANCELLATION_HOURS` before class and get an automatic refund.
 - **Instructor dashboard** (`/admin`, password protected):
-  - see bookings, client notes and the waiting list for each class
+  - see bookings, phone numbers, "first time" flags, injury notes and the waiting list for each class
+  - mark bank transfers as paid
   - cancel a booking, with or without a refund
   - change a class's capacity
   - cancel a whole class (everyone is refunded and emailed)
@@ -32,26 +34,45 @@ Run the tests with `npm test`.
 
 ## Setting the class timetable
 
+The timetable is set up as Sunday 7:15–8:15 pm and Tuesday 7–8 pm, 30 SAR, 10 spots per class.
+
 Edit **`schedule.json`**:
 
 ```json
 {
-  "key": "mon-1800-mat-pilates",   // unique id, never reuse for a different time
-  "title": "Mat Pilates",
-  "day": "Monday",
-  "time": "18:00",                 // 24h, studio timezone
+  "key": "sun-1915-pilates",   // unique id, never reuse for a different time
+  "title": "Pilates",
+  "day": "Sunday",
+  "time": "19:15",             // 24h, Riyadh time
   "durationMinutes": 60,
   "capacity": 10,
-  "price": 10,                     // in the main currency unit
-  "description": "Full-body mat Pilates for all levels."
+  "price": 30,                 // SAR
+  "description": "Mat Pilates for all levels."
 }
 ```
 
-Also set `studio.timezone` (for example `Asia/Dubai` or `Europe/London`), `studio.currency` (for example `usd`, `aed` or `gbp`), the address, the contact details and the text. Restart the server after editing. Dates that already exist are not changed, so cancel those from the dashboard if needed. If you change a class's time, give it a new `key`.
+The `studio` section holds the text, location, timezone (`Asia/Riyadh`), currency (`sar`) and the bank transfer details shown to clients (`bankTransfer.instructions`). Restart the server after editing. Dates that already exist are not changed, so cancel those from the dashboard if needed. If you change a class's time, give it a new `key`.
 
-> ⚠️ The class times currently in `schedule.json` are **placeholders**. Replace them with the real times from the current Google Form.
+> ⚠️ The IBAN and STC Pay number in `bankTransfer.instructions` are **placeholders**. Put the real ones in before going live, or set `bankTransfer.enabled` to `false` to offer online payment only. The 10-spot capacity is also a guess.
 
-## Taking real payments (Stripe)
+## Taking real payments (Moyasar)
+
+Stripe does not support businesses in Saudi Arabia, so the site uses [Moyasar](https://moyasar.com), a Saudi gateway licensed by SAMA. It supports mada, Visa/Mastercard, Apple Pay and STC Pay. Clients pay on Moyasar's hosted invoice page.
+
+1. Sign up at https://dashboard.moyasar.com. Moyasar accepts freelancers with a Freelance Document as well as companies with a CR.
+2. Copy the **secret key** into `MOYASAR_SECRET_KEY`. Start with the test key `sk_test_…`.
+3. In **Settings → Webhooks**, add `https://YOUR-DOMAIN/api/moyasar/webhook`.
+   - Choose a secret token and put the same value in `MOYASAR_WEBHOOK_SECRET`.
+   - Enable the payment paid event.
+4. Set `BASE_URL` to the public URL of the site.
+
+The site never trusts the webhook body by itself. It always re-checks the invoice with Moyasar's API before confirming a booking. It also re-checks when the client comes back to the site after paying.
+
+> The Moyasar integration was written against Moyasar's Invoices API but has **not yet been run against a live Moyasar account**. Do a full test booking, cancellation and refund with test keys before taking real payments.
+
+### Stripe (other countries)
+
+If you run this outside Saudi Arabia, Stripe is also supported:
 
 1. Create a Stripe account at https://dashboard.stripe.com and copy the **secret key** into `STRIPE_SECRET_KEY`.
 2. Add a webhook endpoint: **Developers → Webhooks → Add endpoint**.
@@ -62,7 +83,7 @@ Also set `studio.timezone` (for example `Asia/Dubai` or `Europe/London`), `studi
 
 Test first with Stripe's `sk_test_…` keys and card `4242 4242 4242 4242`.
 
-Stripe is not available in every country. All the gateway code lives in `src/payments.js` behind a small interface (`createCheckout`, `getCheckout`, `expireCheckout`, `refund`), so you can swap in another provider without touching the booking logic.
+All the gateway code lives in `src/payments.js` behind a small interface (`createCheckout`, `getCheckout`, `expireCheckout`, `refund`), so you can swap in another provider without touching the booking logic.
 
 ## Sending emails
 

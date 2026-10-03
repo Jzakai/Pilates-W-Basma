@@ -30,6 +30,7 @@ function select(id) {
 const STATUS = {
   confirmed: ['Confirmed', ''],
   pending: ['Paying…', 'low'],
+  transfer: ['Awaiting transfer', 'low'],
   cancelled: ['Cancelled', 'danger'],
   waiting: ['Waiting', 'full'],
   offered: ['Offered', 'low'],
@@ -38,6 +39,7 @@ const STATUS = {
   expired: ['Expired', 'full'],
   removed: ['Removed', 'full'],
 };
+const PAID_BY = { moyasar: 'Online', stripe: 'Online', demo: 'Online (demo)', transfer: 'Transfer', manual: 'At studio', free: 'Free' };
 const statusBadge = (st) => el('span', { class: `badge ${STATUS[st]?.[1] ?? ''}` }, STATUS[st]?.[0] ?? st);
 const when = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
 
@@ -72,13 +74,21 @@ async function loadDetail() {
     d.bookings.length ? el('div', { class: 'table-wrap' }, el('table', {},
       el('thead', {}, el('tr', {}, ['Name', 'Contact', 'Paid', 'Status', ''].map((t) => el('th', {}, t)))),
       el('tbody', {}, d.bookings.map((b) => el('tr', {},
-        el('td', {}, b.name, b.notes ? el('div', { class: 'sub' }, `📝 ${b.notes}`) : null),
+        el('td', {}, b.name,
+          b.first_time === 'yes' ? el('div', {}, el('span', { class: 'badge low' }, 'First time')) : null,
+          b.notes ? el('div', { class: 'sub' }, `📝 ${b.notes}`) : null),
         el('td', {}, el('a', { href: `mailto:${b.email}` }, b.email), b.phone ? el('div', { class: 'sub' }, b.phone) : null),
-        el('td', {}, b.payment_provider === 'manual' ? 'At studio' : b.payment_provider === 'free' ? 'Free' : b.amount,
+        el('td', {}, ['manual', 'free'].includes(b.payment_provider) ? '—' : b.amount,
+          el('div', { class: 'sub' }, PAID_BY[b.payment_provider] ?? b.payment_provider),
           b.refunded ? el('div', { class: 'sub' }, 'refunded') : null),
-        el('td', {}, statusBadge(b.status)),
-        el('td', {}, ['confirmed', 'pending'].includes(b.status) && !s.past
-          ? el('button', { class: 'btn danger small', onclick: () => cancelBooking(b) }, 'Cancel') : null),
+        el('td', {}, statusBadge(b.status === 'pending' && b.payment_provider === 'transfer' ? 'transfer' : b.status),
+          b.status === 'pending' && b.payment_provider === 'transfer' ? el('div', { class: 'sub' }, `until ${when(b.hold_expires_at)}`) : null),
+        el('td', { style: 'white-space:nowrap' },
+          b.payment_provider === 'transfer' && ['pending', 'expired'].includes(b.status)
+            ? el('button', { class: 'btn small', onclick: () => markPaid(b) }, 'Mark paid') : null,
+          ' ',
+          ['confirmed', 'pending'].includes(b.status) && !s.past
+            ? el('button', { class: 'btn danger small', onclick: () => cancelBooking(b) }, 'Cancel') : null),
       ))),
     )) : el('p', { class: 'fine' }, 'No bookings yet.'),
   );
@@ -89,7 +99,9 @@ async function loadDetail() {
       el('thead', {}, el('tr', {}, ['#', 'Name', 'Contact', 'Status', ''].map((t) => el('th', {}, t)))),
       el('tbody', {}, d.waitlist.map((w, i) => el('tr', {},
         el('td', {}, i + 1),
-        el('td', {}, w.name, el('div', { class: 'sub' }, `joined ${when(w.created_at)}`)),
+        el('td', {}, w.name, el('div', { class: 'sub' }, `joined ${when(w.created_at)}`),
+          w.first_time === 'yes' ? el('div', {}, el('span', { class: 'badge low' }, 'First time')) : null,
+          w.notes ? el('div', { class: 'sub' }, `📝 ${w.notes}`) : null),
         el('td', {}, el('a', { href: `mailto:${w.email}` }, w.email), w.phone ? el('div', { class: 'sub' }, w.phone) : null),
         el('td', {}, statusBadge(w.status),
           w.status === 'offered' ? el('div', { class: 'sub' }, `until ${when(w.offer_expires_at)}`) : null),
@@ -101,7 +113,7 @@ async function loadDetail() {
 
   const add = s.cancelled || s.past ? null : el('div', { class: 'card' },
     el('h3', {}, 'Add a booking manually'),
-    el('p', { class: 'fine' }, 'For clients paying in cash or by bank transfer. They will get a confirmation email.'),
+    el('p', { class: 'fine' }, 'For clients who booked with you directly. They will get a confirmation email.'),
     el('form', { class: 'inline-form', onsubmit: addBooking },
       el('label', {}, 'Name', el('input', { name: 'name', required: true })),
       el('label', {}, 'Email', el('input', { name: 'email', type: 'email', required: true })),
@@ -138,10 +150,15 @@ function cancelClass() {
 
 function cancelBooking(b) {
   if (!confirm(`Cancel ${b.name}'s booking? The next person on the waiting list will be offered the spot.`)) return;
-  const refund = b.amount_minor > 0 && b.status === 'confirmed' && b.payment_provider !== 'manual'
+  const refund = b.amount_minor > 0 && b.status === 'confirmed' && !['manual', 'transfer'].includes(b.payment_provider)
     ? confirm(`Refund ${b.amount} to ${b.name}?\n\nOK = refund, Cancel = no refund`)
     : false;
   act(() => api(`/api/admin/bookings/${b.id}/cancel`, { body: { refund } }));
+}
+
+function markPaid(b) {
+  if (!confirm(`Confirm you received ${b.amount} from ${b.name}? She will get a confirmation email.`)) return;
+  act(() => api(`/api/admin/bookings/${b.id}/paid`, { body: {} }));
 }
 
 function removeWaitlist(w) {

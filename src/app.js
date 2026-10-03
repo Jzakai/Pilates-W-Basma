@@ -53,6 +53,13 @@ function createApp({ config, service, payments }) {
 
   app.use(express.json({ limit: '20kb' }));
 
+  // Moyasar calls this when an invoice is paid. Ids in the body are re-verified with Moyasar's API.
+  app.post('/api/moyasar/webhook', h(async (req, res) => {
+    if (payments.name !== 'moyasar') return res.status(404).end();
+    for (const id of payments.invoiceIdsFromEvent(req.body || {})) await service.completeCheckout(id);
+    res.json({ received: true });
+  }));
+
   // ---------------------------------------------------------------- public API
 
   app.get('/api/studio', (req, res) => {
@@ -60,7 +67,9 @@ function createApp({ config, service, payments }) {
     res.json({
       name: studio.name,
       instructor: studio.instructor,
+      eyebrow: studio.eyebrow,
       tagline: studio.tagline,
+      notice: studio.notice,
       about: studio.about,
       location: studio.location,
       contactEmail: studio.contactEmail,
@@ -70,6 +79,8 @@ function createApp({ config, service, payments }) {
       cancellationHours: config.cancellationHours,
       waitlistOfferHours: config.waitlistOfferHours,
       demoPayments: payments.name === 'demo',
+      onlinePayments: payments.name,
+      bankTransfer: studio.bankTransfer.enabled,
     });
   });
 
@@ -99,7 +110,7 @@ function createApp({ config, service, payments }) {
   app.get('/api/waitlist/:token', (req, res) => res.json(service.waitlistView(req.params.token)));
 
   app.post('/api/waitlist/:token/claim', h(async (req, res) => {
-    res.json(await service.claimOffer(req.params.token));
+    res.json(await service.claimOffer(req.params.token, { paymentMethod: req.body.paymentMethod }));
   }));
 
   app.post('/api/waitlist/:token/leave', (req, res) => res.json(service.leaveWaitlist(req.params.token)));
@@ -124,6 +135,10 @@ function createApp({ config, service, payments }) {
   admin.post('/bookings/:id/cancel', h(async (req, res) => {
     const refunded = await service.adminCancelBooking(Number(req.params.id), { refund: Boolean(req.body.refund) });
     res.json({ ok: true, refunded });
+  }));
+  admin.post('/bookings/:id/paid', h(async (req, res) => {
+    await service.adminMarkPaid(Number(req.params.id));
+    res.json({ ok: true });
   }));
   admin.post('/waitlist/:id/remove', (req, res) => {
     service.adminRemoveWaitlist(Number(req.params.id));

@@ -1,48 +1,44 @@
 {
-  "_readme": "Edit this file to change the studio details and the weekly class timetable. Times are 24h (HH:MM) in the studio timezone. Prices are in the main currency unit (e.g. 15 = 15.00). Each class needs a unique 'key' — if you change a class's time, give it a new key so existing bookings are not affected.",
+  "_readme": "Edit this file to change the studio details and the weekly class timetable. Times are 24h (HH:MM) in the studio timezone. Prices are in the main currency unit (e.g. 30 = 30 SAR). Each class needs a unique 'key' — if you change a class's time, give it a new key so existing bookings are not affected.",
   "studio": {
     "name": "Pilates w Basma",
     "instructor": "Basma",
-    "tagline": "Mat Pilates & Yoga classes in small groups — strengthen, lengthen, breathe.",
-    "about": "Small-group mat Pilates and yoga classes focused on core strength, posture, flexibility and mindful movement. All levels welcome — every exercise comes with modifications so you can work at your own pace.",
-    "location": "Studio address — edit in schedule.json",
-    "contactEmail": "hello@example.com",
+    "eyebrow": "Pilates · KAUST · Female only",
+    "tagline": "Ready to move and sculpt? Come as you are and leave feeling stronger, more energized, and a little more connected to your body.",
+    "about": "Pilates classes at KAUST for women. Spots are limited, so reserve yours in one of the upcoming classes below.",
+    "notice": "Classes are for women only.",
+    "location": "Harbor Fitness Studio, KAUST",
+    "contactEmail": "",
     "contactPhone": "",
     "instagram": "",
-    "timezone": "UTC",
-    "currency": "usd",
-    "weeksAhead": 4
+    "timezone": "Asia/Riyadh",
+    "currency": "sar",
+    "weeksAhead": 4,
+    "bankTransfer": {
+      "enabled": true,
+      "instructions": "Class fee: 30 SAR\nName: Basma Labani\nIBAN: SA00 0000 0000 0000 0000 0000 (Saudi National Bank)\nOR STC Pay: +9665XXXXXXXX\n\nPlease send the transfer before the class. Your spot is confirmed once Basma has received it."
+    }
   },
   "classes": [
     {
-      "key": "mon-1800-mat-pilates",
-      "title": "Mat Pilates",
-      "day": "Monday",
-      "time": "18:00",
+      "key": "sun-1915-pilates",
+      "title": "Pilates",
+      "day": "Sunday",
+      "time": "19:15",
       "durationMinutes": 60,
       "capacity": 10,
-      "price": 10,
-      "description": "Full-body mat Pilates for all levels."
+      "price": 30,
+      "description": "Mat Pilates for all levels."
     },
     {
-      "key": "wed-1800-mat-pilates",
-      "title": "Mat Pilates",
-      "day": "Wednesday",
-      "time": "18:00",
+      "key": "tue-1900-pilates",
+      "title": "Pilates",
+      "day": "Tuesday",
+      "time": "19:00",
       "durationMinutes": 60,
       "capacity": 10,
-      "price": 10,
-      "description": "Full-body mat Pilates for all levels."
-    },
-    {
-      "key": "sat-1000-yoga-flow",
-      "title": "Yoga Flow",
-      "day": "Saturday",
-      "time": "10:00",
-      "durationMinutes": 60,
-      "capacity": 10,
-      "price": 10,
-      "description": "A gentle vinyasa flow to stretch, strengthen and unwind."
+      "price": 30,
+      "description": "Mat Pilates for all levels."
     }
   ]
 }

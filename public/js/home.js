@@ -3,12 +3,20 @@ const form = document.getElementById('book-form');
 let sessions = [];
 let activeWeek = null;
 let current = null; // { session, mode: 'book' | 'waitlist' }
+let studioInfo = {};
 
 document.getElementById('year').textContent = new Date().getFullYear();
 
 loadStudio().then((studio) => {
   document.title = `${studio.name} — Book a class`;
+  studioInfo = studio;
+  document.getElementById('eyebrow').textContent = studio.eyebrow;
   document.getElementById('tagline').textContent = studio.tagline;
+  if (studio.notice) {
+    const n = document.getElementById('hero-notice');
+    n.textContent = studio.notice;
+    n.hidden = false;
+  }
   document.getElementById('about-text').textContent = studio.about;
   document.getElementById('location').textContent = studio.location ? `📍 ${studio.location}` : '';
   if (studio.cancellationHours > 0) {
@@ -92,7 +100,8 @@ function card(s) {
   }
 
   return el('article', { class: `class-card${s.cancelled ? ' cancelled' : ''}` },
-    el('div', { class: 'time' }, fmtTime(s.startsAt), el('small', {}, `${s.durationMinutes} min`)),
+    el('div', { class: 'time' }, fmtTime(s.startsAt).split(' ')[0],
+      el('small', {}, `${fmtTime(s.startsAt).split(' ')[1]} · ${s.durationMinutes} min`)),
     el('div', {},
       el('h3', {}, s.title),
       el('div', { class: 'meta' }, [s.description, s.price].filter(Boolean).join(' · ')),
@@ -115,15 +124,25 @@ function open(session, mode) {
         `This class is full. Join the waiting list and we'll email you if a spot opens up — you won't be charged unless you claim it.`)
       : '',
   );
-  document.getElementById('notes-field').hidden = mode !== 'book';
-  document.getElementById('dialog-submit').textContent = mode === 'book' ? 'Continue to payment' : 'Join waiting list';
+  document.getElementById('pay-field').hidden = mode !== 'book' || !studioInfo.bankTransfer;
+  document.getElementById('dialog-submit').textContent = submitLabel(mode);
   document.getElementById('dialog-submit').disabled = false;
-  document.getElementById('dialog-fine').textContent = mode === 'book'
-    ? 'Your spot is held for 30 minutes while you pay. Payments are processed securely by our payment provider.'
-    : '';
+  document.getElementById('dialog-fine').textContent = [
+    studioInfo.notice,
+    mode === 'book' ? 'Online payments are processed securely by our payment provider.' : '',
+  ].filter(Boolean).join(' ');
   if (!dialog.open) dialog.showModal();
   form.elements.name.focus();
 }
+
+function submitLabel(mode) {
+  if (mode === 'waitlist') return 'Join waiting list';
+  return form.elements.paymentMethod.value === 'transfer' ? 'Reserve my spot' : 'Continue to payment';
+}
+
+form.addEventListener('change', (e) => {
+  if (e.target.name === 'paymentMethod') document.getElementById('dialog-submit').textContent = submitLabel(current.mode);
+});
 
 function showError(message) {
   document.getElementById('dialog-notice').replaceChildren(el('div', { class: 'notice error' }, message));
@@ -172,7 +191,7 @@ form.addEventListener('submit', async (event) => {
     }
     showError(err.message);
     submit.disabled = false;
-    submit.textContent = mode === 'book' ? 'Continue to payment' : 'Join waiting list';
+    submit.textContent = submitLabel(mode);
   }
 });
 

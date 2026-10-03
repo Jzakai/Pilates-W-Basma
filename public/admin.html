@@ -17,7 +17,8 @@
     .list button { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 12px 16px; border-bottom: 1px solid var(--line); cursor: pointer; }
     .list button:hover { background: var(--bg); }
     .list button[aria-current="true"] { background: var(--accent-soft); }
-    .list .row1 { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 0.95rem; }
+    .list .row1 { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 600; font-size: 0.95rem; }
+    .list .row1 .badge { flex-shrink: 0; }
     .list .row2 { color: var(--muted); font-size: 0.85rem; }
     .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
     .card h3 { margin-bottom: 12px; }

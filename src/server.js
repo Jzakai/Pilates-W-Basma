@@ -19,7 +19,10 @@ setInterval(() => service.syncSessions(), 3600_000);
 
 app.listen(config.port, () => {
   console.log(`${config.studio.name} booking site running at ${config.baseUrl}`);
-  if (payments.name === 'demo') console.log('Payments: DEMO mode (set STRIPE_SECRET_KEY to take real payments)');
+  console.log(payments.name === 'demo'
+    ? 'Payments: DEMO mode (set MOYASAR_SECRET_KEY to take real payments)'
+    : `Payments: ${payments.name}`);
+  if (config.studio.bankTransfer.enabled) console.log('Bank transfer / STC Pay option: enabled');
   if (!config.adminPassword) console.log('Dashboard disabled: set ADMIN_PASSWORD to enable /admin');
   if (!config.smtp.host) console.log('Email: SMTP not configured, emails will be printed here');
 });

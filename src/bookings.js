@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 const { transaction } = require('./db');
-const { localString, upcomingDates } = require('./time');
+const { localString, localToEpoch, upcomingDates } = require('./time');
 const { toMinor, formatMoney, formatClassTime } = require('./format');
 
 class BookingError extends Error {
@@ -13,14 +13,18 @@ class BookingError extends Error {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function cleanCustomer(input = {}) {
+// strict = the public booking / waiting-list forms, where phone and "first time?" are required.
+function cleanCustomer(input = {}, { strict = true } = {}) {
   const name = String(input.name || '').trim().slice(0, 100);
   const email = String(input.email || '').trim().toLowerCase().slice(0, 200);
   const phone = String(input.phone || '').trim().slice(0, 40);
   const notes = String(input.notes || '').trim().slice(0, 500);
+  const firstTime = ['yes', 'no'].includes(input.firstTime) ? input.firstTime : '';
   if (!name) throw new BookingError('Please enter your name.');
   if (!EMAIL_RE.test(email)) throw new BookingError('Please enter a valid email address.');
-  return { name, email, phone, notes };
+  if (strict && !/^\+?[\d\s()-]{7,}$/.test(phone)) throw new BookingError('Please enter your phone / WhatsApp number.');
+  if (strict && !firstTime) throw new BookingError('Please tell us if this is your first time doing Pilates.');
+  return { name, email, phone, notes, firstTime };
 }
 
 const newToken = () => crypto.randomBytes(24).toString('base64url');
@@ -65,7 +69,7 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
   }
 
   function describe(session) {
-    return `${session.title}\n${formatClassTime(session.starts_at)} (${session.duration_min} min)` +
+    return `${session.title}\n${formatClassTime(session.starts_at, session.duration_min)}` +
       (session.location ? `\n${session.location}` : '');
   }
 
@@ -128,8 +132,12 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
   // ---------------------------------------------------------------- booking
 
   // Reserves a seat and returns where to send the customer to pay.
-  async function startBooking(sessionId, input, { waitlistEntry = null } = {}) {
-    const customer = cleanCustomer(input);
+  const transferEnabled = () => config.studio.bankTransfer.enabled;
+
+  async function startBooking(sessionId, input, { waitlistEntry = null, strict = true } = {}) {
+    const customer = cleanCustomer(input, { strict });
+    const byTransfer = input.paymentMethod === 'transfer';
+    if (byTransfer && !transferEnabled()) throw new BookingError('Bank transfer is not available — please pay online.');
     let session;
     const booking = transaction(db, () => {
       session = getSession(sessionId);
@@ -149,14 +157,17 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
       }
 
       const amount = session.price_minor;
-      const provider = amount === 0 ? 'free' : payments.name;
+      const provider = amount === 0 ? 'free' : byTransfer ? 'transfer' : payments.name;
       const token = newToken();
-      const holdUntil = now() + config.holdMinutes * 60_000;
+      // A transfer reservation lasts transferHoldHours, but never past the start of class.
+      const holdUntil = provider === 'transfer'
+        ? Math.min(now() + config.transferHoldHours * 3600_000, localToEpoch(session.starts_at, tz))
+        : now() + config.holdMinutes * 60_000;
       const r = db.prepare(`
-        INSERT INTO bookings (session_id, name, email, phone, notes, status, token, amount_minor, currency,
+        INSERT INTO bookings (session_id, name, email, phone, first_time, notes, status, token, amount_minor, currency,
                               hold_expires_at, payment_provider, waitlist_id, created_at)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
-        .run(session.id, customer.name, customer.email, customer.phone, customer.notes, token, amount,
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
+        .run(session.id, customer.name, customer.email, customer.phone, customer.firstTime, customer.notes, token, amount,
           session.currency, holdUntil, provider, waitlistEntry?.id ?? null, now());
       if (waitlistEntry) {
         // The offered seat is now held by the pending booking instead.
@@ -167,6 +178,11 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
 
     if (booking.payment_provider === 'free') {
       await confirmBooking(booking.id, null);
+      return { bookingToken: booking.token, redirectUrl: manageUrl(booking) + '&new=1' };
+    }
+
+    if (booking.payment_provider === 'transfer') {
+      await sendTransferInstructions(booking, session);
       return { bookingToken: booking.token, redirectUrl: manageUrl(booking) + '&new=1' };
     }
 
@@ -184,6 +200,31 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
       console.error('Could not create checkout:', err.message);
       releaseBooking(q.booking.get(booking.id), 'expired', { notify: false });
       throw new BookingError('We could not start the payment. Please try again in a moment.', 502);
+    }
+  }
+
+  const formatDeadline = (ms) => new Date(ms).toLocaleString('en-GB', {
+    timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit', hour12: true,
+  });
+
+  async function sendTransferInstructions(b, s) {
+    const deadline = formatDeadline(b.hold_expires_at);
+    await mailer.send({
+      to: b.email,
+      subject: `Spot reserved — payment needed: ${s.title}, ${formatClassTime(s.starts_at)}`,
+      text: `Hi ${b.name},\n\nYour spot is reserved for:\n\n${describe(s)}\n\n` +
+        `To confirm it, please send ${formatMoney(b.amount_minor, b.currency)} by ${deadline}:\n\n` +
+        `${config.studio.bankTransfer.instructions}\n\n` +
+        `If payment isn't received by then, the spot will be released to the next person.\n` +
+        `View or cancel your booking: ${manageUrl(b)}` + sign,
+    });
+    if (config.adminNotifyEmail) {
+      await mailer.send({
+        to: config.adminNotifyEmail,
+        subject: `Awaiting transfer: ${b.name}, ${s.title} ${formatClassTime(s.starts_at)}`,
+        text: `${b.name} (${b.phone}, ${b.email}) reserved a spot and will pay by bank transfer / STC Pay.\n` +
+          `Mark it as paid in the dashboard once the money arrives: ${config.baseUrl}/admin`,
+      });
     }
   }
 
@@ -216,6 +257,8 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
           to: config.adminNotifyEmail,
           subject: `New booking: ${s.title}, ${formatClassTime(s.starts_at)}`,
           text: `${b.name} (${b.email}${b.phone ? ', ' + b.phone : ''}) booked ${s.title} on ${formatClassTime(s.starts_at)}.` +
+            (b.first_time === 'yes' ? '\nFirst time doing Pilates.' : '') +
+            (b.notes ? `\nNotes: ${b.notes}` : '') +
             `\nSpots left: ${seatsLeft(s)} of ${s.capacity}.`,
         });
       }
@@ -260,8 +303,12 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
     if (refill) processWaitlist(b.session_id, { notify });
   }
 
+  const awaitingTransfer = (b) => b.status === 'pending' && b.payment_provider === 'transfer' && b.hold_expires_at > now();
+
   function canCustomerCancel(b, s) {
-    return b.status === 'confirmed' && !s.cancelled && s.starts_at > localIn(config.cancellationHours);
+    if (s.cancelled || s.starts_at <= nowLocal()) return false;
+    if (awaitingTransfer(b)) return true; // nothing paid yet, so always free to cancel
+    return b.status === 'confirmed' && s.starts_at > localIn(config.cancellationHours);
   }
 
   function bookingView(token) {
@@ -273,6 +320,9 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
       email: b.email,
       status: b.status === 'pending' && b.hold_expires_at <= now() ? 'expired' : b.status,
       amount: formatMoney(b.amount_minor, b.currency),
+      paymentMethod: b.payment_provider,
+      transferInstructions: awaitingTransfer(b) ? config.studio.bankTransfer.instructions : null,
+      payBy: awaitingTransfer(b) ? formatDeadline(b.hold_expires_at) : null,
       refunded: Boolean(b.refunded),
       canCancel: canCustomerCancel(b, s),
       cancellationHours: config.cancellationHours,
@@ -295,7 +345,7 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
   }
 
   async function refundIfPaid(b) {
-    if (!b.payment_ref || b.refunded || b.amount_minor === 0 || b.payment_provider === 'manual') return false;
+    if (!b.payment_ref || b.refunded || b.amount_minor === 0 || ['manual', 'transfer'].includes(b.payment_provider)) return false;
     await payments.refund(b.payment_ref);
     db.prepare('UPDATE bookings SET refunded = 1 WHERE id = ?').run(b.id);
     return true;
@@ -320,8 +370,19 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
         (byStudio ? `Unfortunately your booking has been cancelled by the studio${reason ? `: ${reason}` : '.'}\n\n` : 'Your booking has been cancelled.\n\n') +
         `${describe(s)}\n` +
         (refunded ? `\nA refund of ${formatMoney(b.amount_minor, b.currency)} has been issued — it can take 5–10 days to appear on your statement.\n` : '') +
+        (refund && !refunded && b.status === 'confirmed' && b.payment_provider === 'transfer'
+          ? `\nAs you paid by transfer, ${config.studio.instructor || 'the studio'} will contact you about your refund.\n` : '') +
         sign,
     });
+    if (!byStudio && config.adminNotifyEmail) {
+      await mailer.send({
+        to: config.adminNotifyEmail,
+        subject: `Cancellation: ${b.name}, ${s.title} ${formatClassTime(s.starts_at)}`,
+        text: `${b.name} (${b.phone}, ${b.email}) cancelled their booking.` +
+          (refunded ? ' They were refunded automatically.' : '') +
+          (refund && b.status === 'confirmed' && b.payment_provider === 'transfer' ? ' They paid by transfer — please refund them manually.' : ''),
+      });
+    }
     return refunded;
   }
 
@@ -333,7 +394,7 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
       throw new BookingError(
         `Online cancellation closes ${config.cancellationHours} hours before class. Please contact the studio.`, 409);
     }
-    await cancelBooking(b, { refund: config.refundOnCancel });
+    await cancelBooking(b, { refund: config.refundOnCancel && b.status === 'confirmed' });
     return bookingView(token);
   }
 
@@ -351,9 +412,9 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
       const booked = db.prepare(`SELECT 1 FROM bookings WHERE session_id = ? AND email = ? AND status = 'confirmed'`)
         .get(s.id, customer.email);
       if (booked) throw new BookingError('You already have a booking for this class.', 409);
-      const r = db.prepare(`INSERT INTO waitlist (session_id, name, email, phone, status, token, created_at)
-                            VALUES (?, ?, ?, ?, 'waiting', ?, ?)`)
-        .run(s.id, customer.name, customer.email, customer.phone, newToken(), now());
+      const r = db.prepare(`INSERT INTO waitlist (session_id, name, email, phone, first_time, notes, status, token, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?)`)
+        .run(s.id, customer.name, customer.email, customer.phone, customer.firstTime, customer.notes, newToken(), now());
       return q.waitlistById.get(r.lastInsertRowid);
     });
     const s = getSession(sessionId);
@@ -420,7 +481,7 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
     };
   }
 
-  async function claimOffer(token) {
+  async function claimOffer(token, { paymentMethod } = {}) {
     const w = q.waitlistByToken.get(token);
     if (!w) throw new BookingError('Waiting list entry not found.', 404);
     if (w.status === 'claiming') {
@@ -432,7 +493,8 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
     if (fresh.status !== 'offered' || fresh.offer_expires_at <= now()) {
       throw new BookingError('Sorry, this offer is no longer available.', 409);
     }
-    return startBooking(fresh.session_id, fresh, { waitlistEntry: fresh });
+    const customer = { name: fresh.name, email: fresh.email, phone: fresh.phone, firstTime: fresh.first_time, notes: fresh.notes, paymentMethod };
+    return startBooking(fresh.session_id, customer, { waitlistEntry: fresh, strict: false });
   }
 
   function leaveWaitlist(token) {
@@ -464,7 +526,18 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
         }
       }
       const current = q.booking.get(b.id);
-      if (current.status === 'pending') releaseBooking(current, 'expired');
+      if (current.status !== 'pending') continue;
+      releaseBooking(current, 'expired');
+      if (current.payment_provider === 'transfer') {
+        const s = getSession(current.session_id);
+        mailer.send({
+          to: current.email,
+          subject: `Reservation expired: ${s.title}, ${formatClassTime(s.starts_at)}`,
+          text: `Hi ${current.name},\n\nWe didn't receive your payment in time, so your reserved spot in ${s.title} on ` +
+            `${formatClassTime(s.starts_at, s.duration_min)} has been released.\n\n` +
+            `If you already paid, please reply to this email or contact ${config.studio.instructor || 'the studio'} and we'll sort it out.` + sign,
+        });
+      }
     }
 
     const lapsed = db.prepare(`SELECT * FROM waitlist WHERE status = 'offered' AND offer_expires_at <= ?`).all(now());
@@ -495,12 +568,13 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
 
   function adminSessionDetail(id) {
     const s = getSession(id);
-    const bookings = db.prepare(`SELECT id, name, email, phone, notes, status, amount_minor, currency, payment_provider,
+    const bookings = db.prepare(`SELECT id, name, email, phone, first_time, notes, status, amount_minor, currency, payment_provider,
                                         refunded, created_at, hold_expires_at FROM bookings
-                                 WHERE session_id = ? AND status IN ('confirmed', 'pending', 'cancelled') ORDER BY id`).all(s.id)
-      .filter((b) => b.status !== 'pending' || b.hold_expires_at > now())
+                                 WHERE session_id = ? AND status IN ('confirmed', 'pending', 'cancelled', 'expired') ORDER BY id`).all(s.id)
+      // Expired card checkouts are noise; expired transfers stay visible in case the money arrives late.
+      .filter((b) => (b.status === 'pending' ? b.hold_expires_at > now() : b.status !== 'expired' || b.payment_provider === 'transfer'))
       .map((b) => ({ ...b, amount: formatMoney(b.amount_minor, b.currency), refunded: Boolean(b.refunded) }));
-    const waitlist = db.prepare(`SELECT id, name, email, phone, status, offer_expires_at, created_at FROM waitlist
+    const waitlist = db.prepare(`SELECT id, name, email, phone, first_time, notes, status, offer_expires_at, created_at FROM waitlist
                                  WHERE session_id = ? ORDER BY id`).all(s.id);
     return { session: { ...publicSession(s), past: s.starts_at <= nowLocal() }, bookings, waitlist };
   }
@@ -513,16 +587,31 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
     return cancelBooking(b, { refund, byStudio: true });
   }
 
+  // A bank transfer / STC Pay arrived: confirm the reserved spot.
+  async function adminMarkPaid(bookingId) {
+    const b = q.booking.get(bookingId);
+    if (!b) throw new BookingError('Booking not found.', 404);
+    if (b.status === 'confirmed') return b;
+    if (b.payment_provider !== 'transfer') throw new BookingError('Only bank-transfer bookings can be marked as paid.', 409);
+    if (b.status !== 'pending') {
+      // The hold lapsed but the money arrived: reinstate the booking if there is still room.
+      if (seatsLeft(getSession(b.session_id)) === 0) {
+        throw new BookingError('The reservation expired and the class is now full. Add her manually to over-book, or refund the transfer.', 409);
+      }
+    }
+    return confirmBooking(b.id, null);
+  }
+
   async function adminAddBooking(sessionId, input) {
-    const customer = cleanCustomer(input);
+    const customer = cleanCustomer(input, { strict: false });
     const s = getSession(sessionId);
     const b = transaction(db, () => {
       if (seatsLeft(s) === 0 && !input.overbook) throw new BookingError('Class is full.', 409, { full: true });
       const r = db.prepare(`
-        INSERT INTO bookings (session_id, name, email, phone, notes, status, token, amount_minor, currency,
+        INSERT INTO bookings (session_id, name, email, phone, first_time, notes, status, token, amount_minor, currency,
                               payment_provider, created_at)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?, 0, ?, 'manual', ?)`)
-        .run(s.id, customer.name, customer.email, customer.phone, customer.notes, newToken(), s.currency, now());
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, 'manual', ?)`)
+        .run(s.id, customer.name, customer.email, customer.phone, customer.firstTime, customer.notes, newToken(), s.currency, now());
       return q.booking.get(r.lastInsertRowid);
     });
     return confirmBooking(b.id, null);
@@ -588,6 +677,7 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
     adminSessionDetail,
     adminCancelBooking,
     adminAddBooking,
+    adminMarkPaid,
     adminSetCapacity,
     adminCancelSession,
     adminRemoveWaitlist,

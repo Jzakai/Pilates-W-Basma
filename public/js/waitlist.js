@@ -34,7 +34,10 @@ async function load() {
       el('p', {}, `Hi ${w.name}, a spot opened up and it's being held for you for another ${remaining(w.offerExpiresAt)}.`),
       classInfo(w.session),
       el('div', { class: 'stack' },
-        el('button', { class: 'btn block', id: 'claim', onclick: claim }, 'Pay & confirm my spot'),
+        el('button', { class: 'btn block claim', onclick: () => claim('online') }, 'Pay online & confirm my spot'),
+        (await loadStudio()).bankTransfer
+          ? el('button', { class: 'btn secondary block claim', onclick: () => claim('transfer') }, 'Reserve & pay by bank transfer / STC Pay')
+          : null,
         el('button', { class: 'btn secondary block', onclick: leaveList }, "No thanks, I can't make it")));
   } else if (w.status === 'waiting') {
     nodes.push(el('div', { class: 'icon warn' }, w.position), el('h2', {}, "You're on the waiting list"),
@@ -55,12 +58,10 @@ async function load() {
   panel.replaceChildren(...nodes);
 }
 
-async function claim() {
-  const btn = document.getElementById('claim');
-  btn.disabled = true;
-  btn.textContent = 'Please wait…';
+async function claim(paymentMethod) {
+  document.querySelectorAll('.claim').forEach((btn) => (btn.disabled = true));
   try {
-    const { redirectUrl } = await api(`/api/waitlist/${encodeURIComponent(token)}/claim`, { body: {} });
+    const { redirectUrl } = await api(`/api/waitlist/${encodeURIComponent(token)}/claim`, { body: { paymentMethod } });
     location.href = redirectUrl;
   } catch (err) {
     alert(err.message);
