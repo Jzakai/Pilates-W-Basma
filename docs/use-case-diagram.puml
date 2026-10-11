@@ -1,0 +1,107 @@
+@startuml use-case-diagram
+' Use case diagram for the Pilates w Basma booking system.
+' Render with https://www.plantuml.com/plantuml or any PlantUML plugin.
+
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam usecase {
+  BackgroundColor #FFFFFF
+  BorderColor #3D4652
+}
+skinparam rectangle {
+  BackgroundColor #FBFAF7
+  BorderColor #3D4652
+}
+
+actor Client
+actor "Payment gateway\n(Moyasar)" as Gateway
+actor "Scheduler\n(timer)" as Scheduler
+actor "Instructor\n(Basma)" as Instructor
+
+rectangle "Pilates w Basma booking system" {
+  ' Client goals
+  usecase "View timetable\n& spots left" as ViewTimetable
+  usecase "Book a class" as BookClass
+  usecase "Join waitlist" as JoinWaitlist
+  usecase "Claim waitlist offer" as ClaimOffer
+  usecase "Leave waitlist" as LeaveWaitlist
+  usecase "View booking" as ViewBooking
+  usecase "Cancel booking" as CancelBooking
+  usecase "Receive notifications" as ReceiveNotifications
+
+  ' Shared behaviour
+  usecase "Pay for class" as Pay
+  usecase "Pay online" as PayOnline
+  usecase "Pay by bank transfer" as PayTransfer
+  usecase "Refund payment" as Refund
+  usecase "Offer spot to next\non waitlist" as OfferSpot
+
+  ' Automatic jobs
+  usecase "Generate weekly classes" as GenerateClasses
+  usecase "Release expired holds\n& offers" as ReleaseHolds
+
+  ' Instructor dashboard
+  usecase "View bookings\n& waitlist" as ViewBookings
+  usecase "Mark transfer as paid" as MarkPaid
+  usecase "Add booking manually" as AddBooking
+  usecase "Cancel a class" as CancelClass
+  usecase "Cancel a client's booking" as CancelClientBooking
+  usecase "Change class capacity" as ChangeCapacity
+  usecase "Remove from waitlist" as RemoveFromWaitlist
+}
+
+' --- Actor associations ---
+Client -- ViewTimetable
+Client -- BookClass
+Client -- JoinWaitlist
+Client -- ClaimOffer
+Client -- LeaveWaitlist
+Client -- ViewBooking
+Client -- CancelBooking
+Client -- ReceiveNotifications
+
+PayOnline -- Gateway
+Refund -- Gateway
+
+Scheduler -- GenerateClasses
+Scheduler -- ReleaseHolds
+
+ViewBookings -- Instructor
+MarkPaid -- Instructor
+AddBooking -- Instructor
+CancelClass -- Instructor
+CancelClientBooking -- Instructor
+ChangeCapacity -- Instructor
+RemoveFromWaitlist -- Instructor
+
+' --- Payment ---
+BookClass ..> Pay : <<include>>
+ClaimOffer ..> Pay : <<include>>
+PayOnline --|> Pay
+PayTransfer --|> Pay
+MarkPaid ..> PayTransfer : confirms
+
+' --- Waitlist ---
+JoinWaitlist ..> BookClass : <<extend>>\n[class is full]
+CancelBooking ..> OfferSpot : <<include>>
+LeaveWaitlist ..> OfferSpot : <<include>>
+CancelClientBooking ..> OfferSpot : <<include>>
+ChangeCapacity ..> OfferSpot : <<include>>
+RemoveFromWaitlist ..> OfferSpot : <<include>>
+ReleaseHolds ..> OfferSpot : <<include>>
+
+' --- Refunds ---
+Refund ..> CancelBooking : <<extend>>\n[paid online]
+CancelClass ..> Refund : <<include>>
+
+' --- Notifications (sent by email to the client) ---
+ReceiveNotifications ..> BookClass : <<extend>>\n[booking confirmed]
+ReceiveNotifications ..> CancelBooking : <<extend>>\n[booking cancelled]
+ReceiveNotifications ..> OfferSpot : <<extend>>\n[spot offered]
+
+note bottom of Instructor
+  Dashboard use cases require
+  the instructor password.
+end note
+
+@enduml
