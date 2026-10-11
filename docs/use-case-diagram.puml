@@ -2,6 +2,7 @@
 ' Use case diagram for the Pilates w Basma booking system.
 ' Render with https://www.plantuml.com/plantuml or any PlantUML plugin.
 
+left to right direction
 skinparam shadowing false
 skinparam packageStyle rectangle
 skinparam usecase {
@@ -14,9 +15,9 @@ skinparam rectangle {
 }
 
 actor Client
-actor "Payment gateway\n(Moyasar)" as Gateway
-actor "Scheduler\n(timer)" as Scheduler
 actor "Instructor\n(Basma)" as Instructor
+actor "Scheduler\n(timer)" as Scheduler
+actor "Payment gateway\n(Moyasar)" as Gateway
 
 rectangle "Pilates w Basma booking system" {
   ' Client goals
@@ -66,23 +67,23 @@ Refund -- Gateway
 Scheduler -- GenerateClasses
 Scheduler -- ReleaseHolds
 
-ViewBookings -- Instructor
-MarkPaid -- Instructor
-AddBooking -- Instructor
-CancelClass -- Instructor
-CancelClientBooking -- Instructor
-ChangeCapacity -- Instructor
-RemoveFromWaitlist -- Instructor
+Instructor -- ViewBookings
+Instructor -- MarkPaid
+Instructor -- AddBooking
+Instructor -- CancelClass
+Instructor -- CancelClientBooking
+Instructor -- ChangeCapacity
+Instructor -- RemoveFromWaitlist
 
 ' --- Payment ---
 BookClass ..> Pay : <<include>>
 ClaimOffer ..> Pay : <<include>>
-PayOnline --|> Pay
-PayTransfer --|> Pay
+Pay <|-- PayOnline
+Pay <|-- PayTransfer
 MarkPaid ..> PayTransfer : confirms
 
 ' --- Waitlist ---
-JoinWaitlist ..> BookClass : <<extend>>\n[class is full]
+BookClass <.. JoinWaitlist : <<extend>>\n[class is full]
 CancelBooking ..> OfferSpot : <<include>>
 LeaveWaitlist ..> OfferSpot : <<include>>
 CancelClientBooking ..> OfferSpot : <<include>>
@@ -91,13 +92,13 @@ RemoveFromWaitlist ..> OfferSpot : <<include>>
 ReleaseHolds ..> OfferSpot : <<include>>
 
 ' --- Refunds ---
-Refund ..> CancelBooking : <<extend>>\n[paid online]
+CancelBooking <.. Refund : <<extend>>\n[paid online]
 CancelClass ..> Refund : <<include>>
 
 ' --- Notifications (sent by email to the client) ---
-ReceiveNotifications ..> BookClass : <<extend>>\n[booking confirmed]
-ReceiveNotifications ..> CancelBooking : <<extend>>\n[booking cancelled]
-ReceiveNotifications ..> OfferSpot : <<extend>>\n[spot offered]
+BookClass <.. ReceiveNotifications : <<extend>>\n[booking confirmed]
+CancelBooking <.. ReceiveNotifications : <<extend>>\n[booking cancelled]
+OfferSpot <.. ReceiveNotifications : <<extend>>\n[spot offered]
 
 note bottom of Instructor
   Dashboard use cases require
