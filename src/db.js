@@ -1,154 +1,298 @@
+// Database access for both Postgres (Supabase, production) and SQLite (local development, tests).
+//
+// SQL is written once, Postgres-style, with $1, $2 … placeholders and RETURNING id on inserts.
+// Every call is async:  db.get / db.all / db.run  and  db.tx(async (t) => …)  for transactions.
+// Inside a transaction, t.lock(table, id) locks a row on Postgres so two people cannot book
+// the last spot or spend the same credit at the same time (SQLite already runs one transaction at a time).
+
 const fs = require('node:fs');
 const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
 
-// Bump when the schema changes in a way that cannot be migrated in place.
-const SCHEMA_VERSION = 2;
+// Tables that may be row-locked with t.lock().
+const LOCKABLE = new Set(['class_sessions', 'users', 'bookings', 'payments', 'waitlist']);
 
-const SCHEMA = `
+// ------------------------------------------------------------------ schema
+
+const tables = (pk, big) => `
 CREATE TABLE IF NOT EXISTS users (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  id              ${pk},
   email           TEXT NOT NULL UNIQUE,
   name            TEXT NOT NULL,
   phone           TEXT NOT NULL,
   injuries        TEXT NOT NULL DEFAULT '',
   activity_level  TEXT NOT NULL DEFAULT '',
   password_hash   TEXT NOT NULL,
-  credit_minor    INTEGER NOT NULL DEFAULT 0,   -- credit balance in the currency's smallest unit
-  created_at      INTEGER NOT NULL
+  credit_minor    INTEGER NOT NULL DEFAULT 0,
+  created_at      ${big} NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS user_sessions (
   token_hash      TEXT PRIMARY KEY,
-  user_id         INTEGER NOT NULL REFERENCES users(id),
-  expires_at      INTEGER NOT NULL
+  user_id         ${big} NOT NULL REFERENCES users(id),
+  expires_at      ${big} NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS password_resets (
   token_hash      TEXT PRIMARY KEY,
-  user_id         INTEGER NOT NULL REFERENCES users(id),
-  expires_at      INTEGER NOT NULL,
+  user_id         ${big} NOT NULL REFERENCES users(id),
+  expires_at      ${big} NOT NULL,
   used            INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS credit_ledger (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id         INTEGER NOT NULL REFERENCES users(id),
-  amount_minor    INTEGER NOT NULL,             -- + credit added, - credit spent
+  id              ${pk},
+  user_id         ${big} NOT NULL REFERENCES users(id),
+  amount_minor    INTEGER NOT NULL,
   reason          TEXT NOT NULL,
-  booking_id      INTEGER,
-  created_at      INTEGER NOT NULL
+  booking_id      ${big},
+  created_at      ${big} NOT NULL
 );
 
--- Weekly recurring classes the instructor manages from the dashboard.
 CREATE TABLE IF NOT EXISTS class_templates (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  id              ${pk},
   title           TEXT NOT NULL,
   description     TEXT NOT NULL DEFAULT '',
-  weekday         INTEGER NOT NULL,             -- 0 = Sunday
-  time            TEXT NOT NULL,                -- HH:MM, studio timezone
+  weekday         INTEGER NOT NULL,
+  "time"          TEXT NOT NULL,
   duration_min    INTEGER NOT NULL,
   capacity        INTEGER NOT NULL,
   price_minor     INTEGER NOT NULL,
   active          INTEGER NOT NULL DEFAULT 1,
-  created_at      INTEGER NOT NULL
+  created_at      ${big} NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS class_sessions (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  template_id     INTEGER REFERENCES class_templates(id),   -- NULL for one-off classes
+  id              ${pk},
+  template_id     ${big} REFERENCES class_templates(id),
   title           TEXT NOT NULL,
   description     TEXT NOT NULL DEFAULT '',
   location        TEXT NOT NULL DEFAULT '',
-  starts_at       TEXT NOT NULL,                -- local time in studio timezone, YYYY-MM-DDTHH:MM
+  starts_at       TEXT NOT NULL,
   duration_min    INTEGER NOT NULL,
   capacity        INTEGER NOT NULL,
   price_minor     INTEGER NOT NULL,
   currency        TEXT NOT NULL,
   cancelled       INTEGER NOT NULL DEFAULT 0,
-  created_at      INTEGER NOT NULL,
+  created_at      ${big} NOT NULL,
   UNIQUE (template_id, starts_at)
 );
 
--- One uploaded bank-transfer receipt, covering one or more bookings.
 CREATE TABLE IF NOT EXISTS payments (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id         INTEGER NOT NULL REFERENCES users(id),
-  amount_minor    INTEGER NOT NULL,             -- amount the receipt should show
+  id              ${pk},
+  user_id         ${big} NOT NULL REFERENCES users(id),
+  amount_minor    INTEGER NOT NULL,
   currency        TEXT NOT NULL,
-  receipt_file    TEXT NOT NULL,                -- file name inside the uploads directory
-  receipt_name    TEXT NOT NULL,                -- original file name
+  receipt_file    TEXT NOT NULL,
+  receipt_name    TEXT NOT NULL,
   receipt_type    TEXT NOT NULL,
-  status          TEXT NOT NULL,                -- pending_review | approved | rejected
+  status          TEXT NOT NULL,
   reject_reason   TEXT NOT NULL DEFAULT '',
-  created_at      INTEGER NOT NULL,
-  reviewed_at     INTEGER
+  created_at      ${big} NOT NULL,
+  reviewed_at     ${big}
+);
+
+CREATE TABLE IF NOT EXISTS waitlist (
+  id              ${pk},
+  session_id      ${big} NOT NULL REFERENCES class_sessions(id),
+  user_id         ${big} NOT NULL REFERENCES users(id),
+  status          TEXT NOT NULL,
+  offer_expires_at ${big},
+  created_at      ${big} NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS bookings (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id      INTEGER NOT NULL REFERENCES class_sessions(id),
-  user_id         INTEGER REFERENCES users(id), -- NULL for bookings the instructor added for a guest
+  id              ${pk},
+  session_id      ${big} NOT NULL REFERENCES class_sessions(id),
+  user_id         ${big} REFERENCES users(id),
   name            TEXT NOT NULL,
   email           TEXT NOT NULL,
   phone           TEXT NOT NULL DEFAULT '',
-  status          TEXT NOT NULL,                -- awaiting_payment | payment_review | confirmed | cancelled
+  status          TEXT NOT NULL,
   amount_minor    INTEGER NOT NULL,
   currency        TEXT NOT NULL,
-  paid_with       TEXT,                         -- transfer | credit | manual | free
-  payment_id      INTEGER REFERENCES payments(id),
-  waitlist_id     INTEGER REFERENCES waitlist(id),
+  paid_with       TEXT,
+  payment_id      ${big} REFERENCES payments(id),
+  waitlist_id     ${big} REFERENCES waitlist(id),
   reminder_sent   INTEGER NOT NULL DEFAULT 0,
   cancel_reason   TEXT NOT NULL DEFAULT '',
-  created_at      INTEGER NOT NULL,
-  confirmed_at    INTEGER,
-  cancelled_at    INTEGER
+  created_at      ${big} NOT NULL,
+  confirmed_at    ${big},
+  cancelled_at    ${big}
 );
 CREATE INDEX IF NOT EXISTS bookings_session ON bookings(session_id, status);
 CREATE INDEX IF NOT EXISTS bookings_user ON bookings(user_id, status);
-
-CREATE TABLE IF NOT EXISTS waitlist (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  session_id      INTEGER NOT NULL REFERENCES class_sessions(id),
-  user_id         INTEGER NOT NULL REFERENCES users(id),
-  status          TEXT NOT NULL,                -- waiting | offered | booked | expired | removed
-  offer_expires_at INTEGER,                     -- epoch ms
-  created_at      INTEGER NOT NULL
-);
 CREATE INDEX IF NOT EXISTS waitlist_session ON waitlist(session_id, status);
 `;
 
-function openDb(file) {
-  if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-  const { user_version: version } = db.prepare('PRAGMA user_version').get();
-  if (version !== SCHEMA_VERSION) {
-    // Earlier versions only ever held demo data, so they are rebuilt rather than migrated.
-    const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all();
-    db.exec('PRAGMA foreign_keys = OFF;');
-    for (const { name } of tables) db.exec(`DROP TABLE IF EXISTS "${name}"`);
-    db.exec('PRAGMA foreign_keys = ON;');
-    db.exec(SCHEMA);
-    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-  } else {
-    db.exec(SCHEMA);
-  }
+const TABLE_NAMES = ['users', 'user_sessions', 'password_resets', 'credit_ledger', 'class_templates',
+  'class_sessions', 'payments', 'waitlist', 'bookings'];
+
+const PG_SCHEMA = tables('BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY', 'BIGINT') +
+  // Supabase exposes the public schema through its auto-generated REST API. Row level security with
+  // no policies keeps that API closed; this server connects as the database owner, which bypasses it.
+  TABLE_NAMES.map((t) => `ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY;`).join('\n');
+
+const SQLITE_SCHEMA = tables('INTEGER PRIMARY KEY AUTOINCREMENT', 'INTEGER');
+
+// Bump when the SQLite schema changes in a way that cannot be migrated in place.
+const SQLITE_SCHEMA_VERSION = 3;
+
+// ----------------------------------------------------------------- Postgres
+
+async function openPostgres(url) {
+  const pg = require('pg');
+  // COUNT(*) and BIGINT columns come back as strings by default; all ours fit safely in a JS number.
+  pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
+  const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url) || url.includes('host=/');
+  // An sslmode in the URL would override the ssl option below, so it is dropped.
+  const connectionString = url.replace(/([?&])sslmode=[^&]*&?/, '$1').replace(/[?&]$/, '');
+  const pool = new pg.Pool({
+    connectionString,
+    max: 5,
+    // Supabase requires TLS. Its pooler certificate is not in Node's default CA list.
+    ssl: local ? false : { rejectUnauthorized: false },
+  });
+  pool.on('error', (err) => console.error('Database connection error:', err.message));
+
+  const runner = (client) => ({
+    async get(sql, params = []) {
+      return (await client.query(sql, params)).rows[0];
+    },
+    async all(sql, params = []) {
+      return (await client.query(sql, params)).rows;
+    },
+    async run(sql, params = []) {
+      const r = await client.query(sql, params);
+      return { changes: r.rowCount, id: r.rows[0]?.id };
+    },
+  });
+
+  const db = {
+    dialect: 'pg',
+    ...runner(pool),
+    async tx(fn) {
+      const client = await pool.connect();
+      const t = {
+        ...runner(client),
+        dialect: 'pg',
+        async lock(table, id) {
+          if (!LOCKABLE.has(table)) throw new Error(`Cannot lock ${table}`);
+          await client.query(`SELECT id FROM ${table} WHERE id = $1 FOR UPDATE`, [id]);
+        },
+        tx: (inner) => inner(t),
+      };
+      try {
+        await client.query('BEGIN');
+        const result = await fn(t);
+        await client.query('COMMIT');
+        return result;
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+    },
+    async lock() {},
+    close: () => pool.end(),
+  };
+
+  await pool.query(PG_SCHEMA);
   return db;
 }
 
-// Runs fn inside a transaction. Nested calls join the outer transaction.
-function transaction(db, fn) {
-  if (db.isTransaction) return fn();
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
+// ------------------------------------------------------------------- SQLite
+
+function openSqlite(file) {
+  const { DatabaseSync } = require('node:sqlite');
+  if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
+  const raw = new DatabaseSync(file);
+  raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+  const { user_version: version } = raw.prepare('PRAGMA user_version').get();
+  if (version !== SQLITE_SCHEMA_VERSION) {
+    // Local development data only: rebuild rather than migrate.
+    const existing = raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all();
+    raw.exec('PRAGMA foreign_keys = OFF;');
+    for (const { name } of existing) raw.exec(`DROP TABLE IF EXISTS "${name}"`);
+    raw.exec('PRAGMA foreign_keys = ON;');
+    raw.exec(SQLITE_SCHEMA);
+    raw.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION}`);
   }
+
+  // $1 → ?1 (SQLite's numbered parameters), cached per SQL string.
+  const cache = new Map();
+  const stmt = (sql) => {
+    let s = cache.get(sql);
+    if (!s) {
+      s = raw.prepare(sql.replace(/\$(\d+)/g, '?$1'));
+      cache.set(sql, s);
+    }
+    return s;
+  };
+  const exec = {
+    get: (sql, params = []) => stmt(sql).get(...params),
+    all: (sql, params = []) => stmt(sql).all(...params),
+    run: (sql, params = []) => {
+      if (/\breturning\b/i.test(sql)) {
+        const row = stmt(sql).get(...params);
+        return { changes: row ? 1 : 0, id: row?.id };
+      }
+      return { changes: Number(stmt(sql).run(...params).changes) };
+    },
+  };
+
+  // One connection, so transactions run one after another (a queue), and queries made outside a
+  // transaction wait while one is open so they are not swept into it. Code inside a transaction
+  // must use the transaction handle it was given (t), never db, or it would wait for itself.
+  let queue = Promise.resolve();
+  let active = false;
+  const outside = (fn) => async (sql, params) => {
+    while (active) await queue;
+    return fn(sql, params);
+  };
+  const inside = (fn) => async (sql, params) => fn(sql, params);
+
+  const t = {
+    dialect: 'sqlite',
+    get: inside(exec.get),
+    all: inside(exec.all),
+    run: inside(exec.run),
+    async lock() {},
+    tx: (inner) => inner(t),
+  };
+
+  return {
+    dialect: 'sqlite',
+    get: outside(exec.get),
+    all: outside(exec.all),
+    run: outside(exec.run),
+    async lock() {},
+    tx(fn) {
+      const work = queue.then(async () => {
+        active = true;
+        raw.exec('BEGIN IMMEDIATE');
+        try {
+          const result = await fn(t);
+          raw.exec('COMMIT');
+          return result;
+        } catch (err) {
+          raw.exec('ROLLBACK');
+          throw err;
+        } finally {
+          active = false;
+        }
+      });
+      queue = work.catch(() => {});
+      return work;
+    },
+    close: async () => raw.close(),
+  };
 }
 
-module.exports = { openDb, transaction };
+// DATABASE_URL (postgres://…) → Postgres, otherwise a SQLite file (or ':memory:').
+async function openDb({ url, file } = {}) {
+  if (url) return openPostgres(url);
+  return openSqlite(file || ':memory:');
+}
+
+module.exports = { openDb, PG_SCHEMA, TABLE_NAMES };

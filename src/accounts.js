@@ -41,13 +41,13 @@ function checkPassword(password) {
 }
 
 function createAccountService({ db, config, mailer, now = () => Date.now() }) {
-  const byEmail = db.prepare('SELECT * FROM users WHERE email = ?');
-  const byId = db.prepare('SELECT * FROM users WHERE id = ?');
+  const byEmail = (email) => db.get('SELECT * FROM users WHERE email = $1', [email]);
+  const byId = (id) => db.get('SELECT * FROM users WHERE id = $1', [id]);
 
-  function startSession(userId) {
+  async function startSession(userId) {
     const token = newToken();
-    db.prepare('INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-      .run(sha256(token), userId, now() + SESSION_DAYS * 86400_000);
+    await db.run('INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
+      [sha256(token), userId, now() + SESSION_DAYS * 86400_000]);
     return token;
   }
 
@@ -63,52 +63,54 @@ function createAccountService({ db, config, mailer, now = () => Date.now() }) {
     };
   }
 
-  function signUp(input = {}) {
+  async function signUp(input = {}) {
     const email = String(input.email || '').trim().toLowerCase().slice(0, 200);
     if (!EMAIL_RE.test(email)) throw new BookingError('Please enter a valid email address.');
     const profile = cleanProfile(input);
     checkPassword(input.password);
-    if (byEmail.get(email)) throw new BookingError('An account with this email already exists. Please sign in.', 409);
-    const r = db.prepare(`INSERT INTO users (email, name, phone, injuries, activity_level, password_hash, created_at)
-                          VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(email, profile.name, profile.phone, profile.injuries, profile.activityLevel, hashPassword(input.password), now());
-    const user = byId.get(r.lastInsertRowid);
+    const taken = () => new BookingError('An account with this email already exists. Please sign in.', 409);
+    if (await byEmail(email)) throw taken();
+    const r = await db.run(`INSERT INTO users (email, name, phone, injuries, activity_level, password_hash, created_at)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (email) DO NOTHING RETURNING id`,
+    [email, profile.name, profile.phone, profile.injuries, profile.activityLevel, hashPassword(input.password), now()]);
+    if (!r.id) throw taken(); // signed up twice at the same moment
+    const user = await byId(r.id);
     console.log(`New account: ${user.name} <${user.email}> (#${user.id})`);
-    return { user: publicUser(user), token: startSession(user.id) };
+    return { user: publicUser(user), token: await startSession(user.id) };
   }
 
-  function signIn({ email, password } = {}) {
-    const user = byEmail.get(String(email || '').trim().toLowerCase());
+  async function signIn({ email, password } = {}) {
+    const user = await byEmail(String(email || '').trim().toLowerCase());
     // Hash anyway so response time does not reveal whether the email exists.
     const ok = user ? verifyPassword(String(password || ''), user.password_hash) : (hashPassword('x'), false);
     if (!ok) throw new BookingError('Email or password is incorrect.', 401);
-    return { user: publicUser(user), token: startSession(user.id) };
+    return { user: publicUser(user), token: await startSession(user.id) };
   }
 
-  function userFromToken(token) {
+  async function userFromToken(token) {
     if (!token) return null;
-    const row = db.prepare(`SELECT u.* FROM user_sessions s JOIN users u ON u.id = s.user_id
-                            WHERE s.token_hash = ? AND s.expires_at > ?`).get(sha256(token), now());
+    const row = await db.get(`SELECT u.* FROM user_sessions s JOIN users u ON u.id = s.user_id
+                              WHERE s.token_hash = $1 AND s.expires_at > $2`, [sha256(token), now()]);
     return row || null;
   }
 
-  function signOut(token) {
-    if (token) db.prepare('DELETE FROM user_sessions WHERE token_hash = ?').run(sha256(token));
+  async function signOut(token) {
+    if (token) await db.run('DELETE FROM user_sessions WHERE token_hash = $1', [sha256(token)]);
   }
 
-  function updateProfile(userId, input) {
+  async function updateProfile(userId, input) {
     const profile = cleanProfile(input);
-    db.prepare('UPDATE users SET name = ?, phone = ?, injuries = ?, activity_level = ? WHERE id = ?')
-      .run(profile.name, profile.phone, profile.injuries, profile.activityLevel, userId);
-    return publicUser(byId.get(userId));
+    await db.run('UPDATE users SET name = $1, phone = $2, injuries = $3, activity_level = $4 WHERE id = $5',
+      [profile.name, profile.phone, profile.injuries, profile.activityLevel, userId]);
+    return publicUser(await byId(userId));
   }
 
   async function requestPasswordReset(email) {
-    const user = byEmail.get(String(email || '').trim().toLowerCase());
+    const user = await byEmail(String(email || '').trim().toLowerCase());
     if (!user) return; // Same response either way, so emails cannot be probed.
     const token = newToken();
-    db.prepare('INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-      .run(sha256(token), user.id, now() + 3600_000);
+    await db.run('INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES ($1, $2, $3)',
+      [sha256(token), user.id, now() + 3600_000]);
     await mailer.send({
       to: user.email,
       subject: `Reset your ${config.studio.name} password`,
@@ -116,15 +118,19 @@ function createAccountService({ db, config, mailer, now = () => Date.now() }) {
     });
   }
 
-  function resetPassword(token, password) {
+  async function resetPassword(token, password) {
     checkPassword(password);
-    const row = db.prepare('SELECT * FROM password_resets WHERE token_hash = ? AND used = 0 AND expires_at > ?')
-      .get(sha256(String(token || '')), now());
-    if (!row) throw new BookingError('This reset link has expired. Please request a new one.', 410);
-    db.prepare('UPDATE password_resets SET used = 1 WHERE token_hash = ?').run(row.token_hash);
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), row.user_id);
-    db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(row.user_id);
-    return { user: publicUser(byId.get(row.user_id)), token: startSession(row.user_id) };
+    const userId = await db.tx(async (t) => {
+      // Marking the link used in the same statement that checks it means it works only once.
+      const row = await t.get(`UPDATE password_resets SET used = 1
+                               WHERE token_hash = $1 AND used = 0 AND expires_at > $2 RETURNING user_id`,
+      [sha256(String(token || '')), now()]);
+      if (!row) throw new BookingError('This reset link has expired. Please request a new one.', 410);
+      await t.run('UPDATE users SET password_hash = $1 WHERE id = $2', [hashPassword(password), row.user_id]);
+      await t.run('DELETE FROM user_sessions WHERE user_id = $1', [row.user_id]);
+      return row.user_id;
+    });
+    return { user: publicUser(await byId(userId)), token: await startSession(userId) };
   }
 
   return { signUp, signIn, signOut, userFromToken, updateProfile, requestPasswordReset, resetPassword, publicUser };

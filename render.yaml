@@ -1,7 +1,6 @@
 # One-click deploy on Render (https://render.com) — Dashboard → New → Blueprint → pick this repo.
-# The free plan is for testing: it sleeps when idle and its disk is wiped on every
-# restart/deploy, so bookings do not survive. For real use switch to a paid plan
-# and add a disk (see README → Deploying).
+# Data lives in Supabase (Postgres + Storage), so restarts on the free plan lose nothing.
+# The free plan still sleeps when idle (see README → Deploying on Render).
 services:
   - type: web
     name: pilates-w-basma
@@ -15,3 +14,9 @@ services:
         value: "22"
       - key: ADMIN_PASSWORD
         sync: false   # Render asks you to type it when you create the service
+      - key: DATABASE_URL
+        sync: false   # Supabase session pooler connection string
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false

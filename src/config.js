@@ -74,8 +74,13 @@ const config = {
   // RENDER_EXTERNAL_URL is set automatically on Render.
   baseUrl: (env.BASE_URL || env.RENDER_EXTERNAL_URL || `http://localhost:${Number(env.PORT) || 3000}`).replace(/\/$/, ''),
   adminPassword: env.ADMIN_PASSWORD || '',
+  // Postgres connection string (Supabase). Without it a local SQLite file is used.
+  databaseUrl: env.DATABASE_URL || '',
   databasePath,
-  // Receipts are stored next to the database so they live on the same persistent disk.
+  // Supabase Storage for receipt files. Without it receipts are kept in a local folder.
+  supabaseUrl: env.SUPABASE_URL || '',
+  supabaseServiceKey: env.SUPABASE_SERVICE_ROLE_KEY || '',
+  supabaseBucket: env.SUPABASE_BUCKET || 'receipts',
   uploadDir: env.UPLOAD_DIR || path.join(path.dirname(databasePath), 'receipts'),
   maxUploadMb: Number(env.MAX_UPLOAD_MB) || 8,
   smtp: {

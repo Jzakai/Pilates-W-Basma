@@ -1,4 +1,3 @@
-const { transaction } = require('./db');
 const { localString, localToEpoch, upcomingDates } = require('./time');
 const { toMinor, formatMoney, formatClassTime, minorUnitFactor } = require('./format');
 const { bookingIcs } = require('./calendar');
@@ -8,6 +7,8 @@ const HOUR = 3600_000;
 const ACTIVE = ['awaiting_payment', 'payment_review', 'confirmed'];
 const PAID_METHODS = ['transfer', 'credit', 'manual'];
 
+// Functions that read or write the database take `x`: the database itself, or the transaction
+// handle when called inside db.tx(). Inside a transaction always pass the handle.
 function createBookingService({ db, config, mailer, now = () => Date.now() }) {
   const tz = config.studio.timezone;
   const currency = config.studio.currency;
@@ -22,33 +23,33 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
   const sign = `\n\nSee you on the mat,\n${config.studio.instructor || config.studio.name}`;
   const accountUrl = (section = '') => `${config.baseUrl}/account.html${section ? '#' + section : ''}`;
 
-  const q = {
-    session: db.prepare('SELECT * FROM class_sessions WHERE id = ?'),
-    booking: db.prepare('SELECT * FROM bookings WHERE id = ?'),
-    user: db.prepare('SELECT * FROM users WHERE id = ?'),
-    payment: db.prepare('SELECT * FROM payments WHERE id = ?'),
-    waitlistEntry: db.prepare('SELECT * FROM waitlist WHERE id = ?'),
-    seatsTaken: db.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM bookings WHERE session_id = :id
-           AND status IN ('awaiting_payment', 'payment_review', 'confirmed'))
-      + (SELECT COUNT(*) FROM waitlist WHERE session_id = :id
-           AND status = 'offered' AND offer_expires_at > :now) AS taken`),
-    waitingCount: db.prepare(`SELECT COUNT(*) AS n FROM waitlist WHERE session_id = ? AND status IN ('waiting', 'offered')`),
-    nextWaiting: db.prepare(`SELECT * FROM waitlist WHERE session_id = ? AND status = 'waiting' ORDER BY id LIMIT 1`),
-  };
+  const byId = (table) => (x, id) => x.get(`SELECT * FROM ${table} WHERE id = $1`, [id]);
+  const findSession = byId('class_sessions');
+  const findBooking = byId('bookings');
+  const findUser = byId('users');
+  const findPayment = byId('payments');
+  const findWaitlist = byId('waitlist');
 
   // ---------------------------------------------------------------- helpers
 
-  function getSession(id) {
-    const s = q.session.get(id);
+  async function getSession(x, id) {
+    const s = await findSession(x, id);
     if (!s) throw new BookingError('Class not found.', 404);
     return s;
   }
 
-  function seatsLeft(s) {
-    return Math.max(0, s.capacity - q.seatsTaken.get({ id: s.id, now: now() }).taken);
+  async function seatsLeft(x, s) {
+    const { taken } = await x.get(`
+      SELECT
+        (SELECT COUNT(*) FROM bookings WHERE session_id = $1
+           AND status IN ('awaiting_payment', 'payment_review', 'confirmed'))
+      + (SELECT COUNT(*) FROM waitlist WHERE session_id = $1
+           AND status = 'offered' AND offer_expires_at > $2) AS taken`, [s.id, now()]);
+    return Math.max(0, s.capacity - Number(taken));
   }
+
+  const waitingCount = async (x, sessionId) => Number((await x.get(
+    `SELECT COUNT(*) AS n FROM waitlist WHERE session_id = $1 AND status IN ('waiting', 'offered')`, [sessionId])).n);
 
   const bookingOpen = (s) => !s.cancelled && hoursBefore(s, config.bookingCutoffHours) > now();
   const waitlistOpen = (s) => !s.cancelled && hoursBefore(s, config.paymentDeadlineHours) > now();
@@ -58,15 +59,15 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     return `${s.title}\n${when(s)}${s.location ? `\n${s.location}` : ''}`;
   }
 
-  function addCredit(userId, amount, reason, bookingId = null) {
+  async function addCredit(x, userId, amount, reason, bookingId = null) {
     if (!userId || !amount) return;
-    db.prepare('UPDATE users SET credit_minor = credit_minor + ? WHERE id = ?').run(amount, userId);
-    db.prepare('INSERT INTO credit_ledger (user_id, amount_minor, reason, booking_id, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(userId, amount, reason, bookingId, now());
+    await x.run('UPDATE users SET credit_minor = credit_minor + $1 WHERE id = $2', [amount, userId]);
+    await x.run('INSERT INTO credit_ledger (user_id, amount_minor, reason, booking_id, created_at) VALUES ($1, $2, $3, $4, $5)',
+      [userId, amount, reason, bookingId, now()]);
   }
 
   async function sendConfirmation(b) {
-    const s = getSession(b.session_id);
+    const s = await getSession(db, b.session_id);
     const how = { credit: ' (paid with credit)', transfer: ' (bank transfer)', manual: '', free: '' }[b.paid_with] ?? '';
     await mailer.send({
       to: b.email,
@@ -78,8 +79,8 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     });
   }
 
-  function publicSession(s, userId) {
-    const left = seatsLeft(s);
+  async function publicSession(s, userId) {
+    const left = await seatsLeft(db, s);
     const out = {
       id: s.id,
       title: s.title,
@@ -90,7 +91,7 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
       capacity: s.capacity,
       spotsLeft: left,
       full: left === 0,
-      waitlistCount: q.waitingCount.get(s.id).n,
+      waitlistCount: await waitingCount(db, s.id),
       price: money(s.price_minor),
       priceMinor: s.price_minor,
       cancelled: Boolean(s.cancelled),
@@ -98,8 +99,8 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
       waitlistOpen: waitlistOpen(s),
     };
     if (userId) {
-      const mine = db.prepare(`SELECT status FROM bookings WHERE session_id = ? AND user_id = ? AND status != 'cancelled'`).get(s.id, userId);
-      const wait = db.prepare(`SELECT status FROM waitlist WHERE session_id = ? AND user_id = ? AND status IN ('waiting', 'offered')`).get(s.id, userId);
+      const mine = await db.get(`SELECT status FROM bookings WHERE session_id = $1 AND user_id = $2 AND status != 'cancelled'`, [s.id, userId]);
+      const wait = await db.get(`SELECT status FROM waitlist WHERE session_id = $1 AND user_id = $2 AND status IN ('waiting', 'offered')`, [s.id, userId]);
       out.myBooking = mine?.status ?? null;
       out.myWaitlist = wait?.status ?? null;
     }
@@ -109,42 +110,42 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
   // ------------------------------------------------------------- timetable
 
   // Loads the weekly classes from schedule.json the first time the site runs.
-  function seedTemplates() {
-    if (db.prepare('SELECT COUNT(*) AS n FROM class_templates').get().n > 0) return;
-    const insert = db.prepare(`INSERT INTO class_templates (title, description, weekday, time, duration_min, capacity, price_minor, created_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  async function seedTemplates() {
+    if (Number((await db.get('SELECT COUNT(*) AS n FROM class_templates')).n) > 0) return;
     for (const c of config.classes) {
-      insert.run(c.title, c.description, c.weekday, c.time, c.durationMinutes, c.capacity, toMinor(c.price, currency), now());
+      await db.run(`INSERT INTO class_templates (title, description, weekday, "time", duration_min, capacity, price_minor, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [c.title, c.description, c.weekday, c.time, c.durationMinutes, c.capacity, toMinor(c.price, currency), now()]);
     }
   }
 
   // Creates dated classes for the coming weeks from the active weekly classes.
-  function syncSessions() {
-    const templates = db.prepare('SELECT * FROM class_templates WHERE active = 1').all();
-    const insert = db.prepare(`
-      INSERT OR IGNORE INTO class_sessions
-        (template_id, title, description, location, starts_at, duration_min, capacity, price_minor, currency, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  async function syncSessions() {
+    const templates = await db.all('SELECT * FROM class_templates WHERE active = 1');
     const current = nowLocal();
     let created = 0;
-    transaction(db, () => {
-      for (const { date, weekday } of upcomingDates(now(), tz, config.studio.weeksAhead * 7)) {
-        for (const t of templates) {
-          if (t.weekday !== weekday) continue;
-          const startsAt = `${date}T${t.time}`;
-          if (startsAt <= current) continue;
-          created += Number(insert.run(t.id, t.title, t.description, config.studio.location, startsAt, t.duration_min,
-            t.capacity, t.price_minor, currency, now()).changes);
-        }
+    for (const { date, weekday } of upcomingDates(now(), tz, config.studio.weeksAhead * 7)) {
+      for (const t of templates) {
+        if (t.weekday !== weekday) continue;
+        const startsAt = `${date}T${t.time}`;
+        if (startsAt <= current) continue;
+        const r = await db.run(`
+          INSERT INTO class_sessions
+            (template_id, title, description, location, starts_at, duration_min, capacity, price_minor, currency, created_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          ON CONFLICT DO NOTHING`,
+        [t.id, t.title, t.description, config.studio.location, startsAt, t.duration_min, t.capacity, t.price_minor, currency, now()]);
+        created += r.changes;
       }
-    });
+    }
     return created;
   }
 
-  function listUpcoming(user) {
-    return db.prepare('SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at, id')
-      .all(nowLocal())
-      .map((s) => publicSession(s, user?.id));
+  async function listUpcoming(user) {
+    const rows = await db.all('SELECT * FROM class_sessions WHERE starts_at > $1 ORDER BY starts_at, id', [nowLocal()]);
+    const out = [];
+    for (const s of rows) out.push(await publicSession(s, user?.id));
+    return out;
   }
 
   // --------------------------------------------------------------- booking
@@ -158,20 +159,21 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     const failed = [];
     for (const id of ids) {
       try {
-        booked.push(transaction(db, () => {
-          const s = getSession(id);
+        booked.push(await db.tx(async (t) => {
+          await t.lock('class_sessions', id);
+          const s = await getSession(t, id);
           if (s.cancelled) throw new BookingError('This class has been cancelled.');
           if (!bookingOpen(s)) throw new BookingError(`Online booking closes ${config.bookingCutoffHours} hours before class.`);
-          const dup = db.prepare(`SELECT 1 FROM bookings WHERE session_id = ? AND user_id = ? AND status != 'cancelled'`).get(s.id, user.id);
+          const dup = await t.get(`SELECT 1 AS x FROM bookings WHERE session_id = $1 AND user_id = $2 AND status != 'cancelled'`, [s.id, user.id]);
           if (dup) throw new BookingError('You are already booked into this class.');
-          if (seatsLeft(s) === 0) throw new BookingError('This class is full.', 409, { full: true });
+          if (await seatsLeft(t, s) === 0) throw new BookingError('This class is full.', 409, { full: true });
           const free = s.price_minor === 0;
-          const r = db.prepare(`
+          const r = await t.run(`
             INSERT INTO bookings (session_id, user_id, name, email, phone, status, amount_minor, currency, paid_with, created_at, confirmed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(s.id, user.id, user.name, user.email, user.phone, free ? 'confirmed' : 'awaiting_payment',
-              s.price_minor, s.currency, free ? 'free' : null, now(), free ? now() : null);
-          return q.booking.get(r.lastInsertRowid);
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+          [s.id, user.id, user.name, user.email, user.phone, free ? 'confirmed' : 'awaiting_payment',
+            s.price_minor, s.currency, free ? 'free' : null, now(), free ? now() : null]);
+          return findBooking(t, r.id);
         }));
       } catch (err) {
         if (!(err instanceof BookingError)) throw err;
@@ -182,10 +184,11 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     const unpaid = booked.filter((b) => b.status === 'awaiting_payment');
     for (const b of booked.filter((x) => x.status === 'confirmed')) await sendConfirmation(b);
     if (unpaid.length) {
-      const lines = unpaid.map((b) => {
-        const s = getSession(b.session_id);
-        return `- ${s.title}, ${when(s)}: ${money(b.amount_minor)} (pay by ${deadlineText(hoursBefore(s, config.paymentDeadlineHours))})`;
-      });
+      const lines = [];
+      for (const b of unpaid) {
+        const s = await getSession(db, b.session_id);
+        lines.push(`- ${s.title}, ${when(s)}: ${money(b.amount_minor)} (pay by ${deadlineText(hoursBefore(s, config.paymentDeadlineHours))})`);
+      }
       await mailer.send({
         to: user.email,
         subject: `Spot${unpaid.length > 1 ? 's' : ''} reserved — payment needed`,
@@ -195,11 +198,15 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
       });
     }
     if (booked.length && config.adminNotifyEmail) {
+      const lines = [];
+      for (const b of booked) {
+        const s = await getSession(db, b.session_id);
+        lines.push(`- ${s.title}, ${when(s)}`);
+      }
       await mailer.send({
         to: config.adminNotifyEmail,
         subject: `New booking: ${user.name} (${booked.length} class${booked.length > 1 ? 'es' : ''})`,
-        text: `${user.name} (${user.email}, ${user.phone}) booked:\n` +
-          booked.map((b) => { const s = getSession(b.session_id); return `- ${s.title}, ${when(s)}`; }).join('\n'),
+        text: `${user.name} (${user.email}, ${user.phone}) booked:\n${lines.join('\n')}`,
       });
     }
     return { booked: booked.map((b) => b.id), failed };
@@ -207,27 +214,32 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
 
   // -------------------------------------------------------------- payments
 
-  const payDeadline = (b) => hoursBefore(getSession(b.session_id), config.paymentDeadlineHours);
+  const payDeadline = async (x, b) => hoursBefore(await getSession(x, b.session_id), config.paymentDeadlineHours);
 
   // Pays for one or more bookings: credit first if asked, then one receipt for the rest.
+  // `file` is an already stored receipt: { key, originalname, mimetype }.
   async function payBookings(user, { bookingIds, useCredits, file }) {
     const ids = [...new Set((Array.isArray(bookingIds) ? bookingIds : [bookingIds]).map(Number))].filter(Boolean);
     if (!ids.length) throw new BookingError('Please choose the classes you are paying for.');
 
-    const result = transaction(db, () => {
-      const fresh = q.user.get(user.id);
-      const list = ids.map((id) => q.booking.get(id));
-      for (const b of list) {
+    const result = await db.tx(async (t) => {
+      await t.lock('users', user.id);
+      const fresh = await findUser(t, user.id);
+      const list = [];
+      for (const id of ids) {
+        await t.lock('bookings', id);
+        const b = await findBooking(t, id);
         if (!b || b.user_id !== user.id) throw new BookingError('Booking not found.', 404);
         if (b.status !== 'awaiting_payment') throw new BookingError('One of these classes is not waiting for payment any more. Please refresh.', 409);
-        if (payDeadline(b) <= now()) throw new BookingError('The payment deadline for one of these classes has passed.', 409);
+        if (await payDeadline(t, b) <= now()) throw new BookingError('The payment deadline for one of these classes has passed.', 409);
+        list.push({ b, start: startsMs(await getSession(t, b.session_id)) });
       }
-      list.sort((a, b) => startsMs(getSession(a.session_id)) - startsMs(getSession(b.session_id)));
+      list.sort((a, b) => a.start - b.start);
 
       let balance = useCredits ? fresh.credit_minor : 0;
       const byCredit = [];
       const byTransfer = [];
-      for (const b of list) {
+      for (const { b } of list) {
         if (balance >= b.amount_minor) {
           byCredit.push(b);
           balance -= b.amount_minor;
@@ -240,26 +252,26 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
       }
 
       for (const b of byCredit) {
-        db.prepare(`UPDATE bookings SET status = 'confirmed', paid_with = 'credit', confirmed_at = ? WHERE id = ?`).run(now(), b.id);
-        addCredit(user.id, -b.amount_minor, 'Paid for a class', b.id);
+        await t.run(`UPDATE bookings SET status = 'confirmed', paid_with = 'credit', confirmed_at = $1 WHERE id = $2`, [now(), b.id]);
+        await addCredit(t, user.id, -b.amount_minor, 'Paid for a class', b.id);
       }
       let paymentId = null;
       if (byTransfer.length) {
         const amount = byTransfer.reduce((sum, b) => sum + b.amount_minor, 0);
-        paymentId = Number(db.prepare(`
+        paymentId = (await t.run(`
           INSERT INTO payments (user_id, amount_minor, currency, receipt_file, receipt_name, receipt_type, status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending_review', ?)`)
-          .run(user.id, amount, currency, file.filename, file.originalname.slice(0, 200), file.mimetype, now()).lastInsertRowid);
+          VALUES ($1, $2, $3, $4, $5, $6, 'pending_review', $7) RETURNING id`,
+        [user.id, amount, currency, file.key, String(file.originalname || 'receipt').slice(0, 200), file.mimetype, now()])).id;
         for (const b of byTransfer) {
-          db.prepare(`UPDATE bookings SET status = 'payment_review', payment_id = ? WHERE id = ?`).run(paymentId, b.id);
+          await t.run(`UPDATE bookings SET status = 'payment_review', payment_id = $1 WHERE id = $2`, [paymentId, b.id]);
         }
       }
       return { byCredit: byCredit.map((b) => b.id), byTransfer: byTransfer.map((b) => b.id), paymentId };
     });
 
-    for (const id of result.byCredit) await sendConfirmation(q.booking.get(id));
+    for (const id of result.byCredit) await sendConfirmation(await findBooking(db, id));
     if (result.paymentId) {
-      const p = q.payment.get(result.paymentId);
+      const p = await findPayment(db, result.paymentId);
       await mailer.send({
         to: user.email,
         subject: 'Receipt received — we will confirm shortly',
@@ -280,29 +292,30 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
   }
 
   async function approvePayment(paymentId) {
-    const changed = transaction(db, () => {
-      const p = q.payment.get(paymentId);
+    const changed = await db.tx(async (t) => {
+      await t.lock('payments', paymentId);
+      const p = await findPayment(t, paymentId);
       if (!p) throw new BookingError('Payment not found.', 404);
       if (p.status !== 'pending_review') throw new BookingError('This receipt has already been reviewed.', 409);
-      db.prepare(`UPDATE payments SET status = 'approved', reviewed_at = ? WHERE id = ?`).run(now(), p.id);
-      const list = db.prepare('SELECT * FROM bookings WHERE payment_id = ?').all(p.id);
+      await t.run(`UPDATE payments SET status = 'approved', reviewed_at = $1 WHERE id = $2`, [now(), p.id]);
+      const list = await t.all('SELECT * FROM bookings WHERE payment_id = $1 ORDER BY id', [p.id]);
       const confirmed = [];
       const credited = [];
       for (const b of list) {
         if (b.status === 'payment_review') {
-          db.prepare(`UPDATE bookings SET status = 'confirmed', paid_with = 'transfer', confirmed_at = ? WHERE id = ?`).run(now(), b.id);
+          await t.run(`UPDATE bookings SET status = 'confirmed', paid_with = 'transfer', confirmed_at = $1 WHERE id = $2`, [now(), b.id]);
           confirmed.push(b.id);
         } else if (b.status === 'cancelled') {
           // Cancelled while the receipt was waiting: the money is real, so it becomes credit.
-          addCredit(b.user_id, b.amount_minor, 'Payment for a cancelled class', b.id);
+          await addCredit(t, b.user_id, b.amount_minor, 'Payment for a cancelled class', b.id);
           credited.push(b);
         }
       }
       return { confirmed, credited, userId: p.user_id };
     });
-    for (const id of changed.confirmed) await sendConfirmation(q.booking.get(id));
+    for (const id of changed.confirmed) await sendConfirmation(await findBooking(db, id));
     if (changed.credited.length) {
-      const u = q.user.get(changed.userId);
+      const u = await findUser(db, changed.userId);
       const total = changed.credited.reduce((sum, b) => sum + b.amount_minor, 0);
       await mailer.send({
         to: u.email,
@@ -316,23 +329,25 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
 
   async function rejectPayment(paymentId, reason) {
     const why = String(reason || '').trim().slice(0, 300) || 'the receipt could not be matched to a transfer';
-    const info = transaction(db, () => {
-      const p = q.payment.get(paymentId);
+    const info = await db.tx(async (t) => {
+      await t.lock('payments', paymentId);
+      const p = await findPayment(t, paymentId);
       if (!p) throw new BookingError('Payment not found.', 404);
       if (p.status !== 'pending_review') throw new BookingError('This receipt has already been reviewed.', 409);
-      db.prepare(`UPDATE payments SET status = 'rejected', reject_reason = ?, reviewed_at = ? WHERE id = ?`).run(why, now(), p.id);
-      const list = db.prepare(`SELECT * FROM bookings WHERE payment_id = ? AND status = 'payment_review'`).all(p.id);
+      await t.run(`UPDATE payments SET status = 'rejected', reject_reason = $1, reviewed_at = $2 WHERE id = $3`, [why, now(), p.id]);
+      const list = await t.all(`SELECT * FROM bookings WHERE payment_id = $1 AND status = 'payment_review' ORDER BY id`, [p.id]);
       for (const b of list) {
-        db.prepare(`UPDATE bookings SET status = 'awaiting_payment', payment_id = NULL WHERE id = ?`).run(b.id);
+        await t.run(`UPDATE bookings SET status = 'awaiting_payment', payment_id = NULL WHERE id = $1`, [b.id]);
       }
       return { userId: p.user_id, list };
     });
     if (info.list.length) {
-      const u = q.user.get(info.userId);
-      const lines = info.list.map((b) => {
-        const s = getSession(b.session_id);
-        return `- ${s.title}, ${when(s)} (pay by ${deadlineText(hoursBefore(s, config.paymentDeadlineHours))})`;
-      });
+      const u = await findUser(db, info.userId);
+      const lines = [];
+      for (const b of info.list) {
+        const s = await getSession(db, b.session_id);
+        lines.push(`- ${s.title}, ${when(s)} (pay by ${deadlineText(hoursBefore(s, config.paymentDeadlineHours))})`);
+      }
       await mailer.send({
         to: u.email,
         subject: 'There was a problem with your payment receipt',
@@ -346,21 +361,25 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
 
   // --------------------------------------------------------- cancellation
 
-  // Cancels a booking, turns money already paid into credit, and offers the spot on.
-  function releaseBooking(b, reason, { credit = true } = {}) {
-    let credited = 0;
-    transaction(db, () => {
-      db.prepare(`UPDATE bookings SET status = 'cancelled', cancel_reason = ?, cancelled_at = ? WHERE id = ?`).run(reason, now(), b.id);
+  // Cancels a booking and turns money already paid into credit. Returns the amount credited,
+  // or null if the booking was no longer active (someone else got there first).
+  async function releaseBooking(bookingId, reason, { credit = true } = {}) {
+    return db.tx(async (t) => {
+      await t.lock('bookings', bookingId);
+      const b = await findBooking(t, bookingId);
+      if (!b || !isActive(b)) return null;
+      await t.run(`UPDATE bookings SET status = 'cancelled', cancel_reason = $1, cancelled_at = $2 WHERE id = $3`, [reason, now(), b.id]);
+      let credited = 0;
       if (credit && b.status === 'confirmed' && PAID_METHODS.includes(b.paid_with) && b.user_id) {
         credited = b.amount_minor;
-        addCredit(b.user_id, credited, reason === 'class cancelled' ? 'Class cancelled by the studio' : 'Cancelled a class', b.id);
+        await addCredit(t, b.user_id, credited, reason === 'class cancelled' ? 'Class cancelled by the studio' : 'Cancelled a class', b.id);
       }
+      return { credited, before: b };
     });
-    return credited;
   }
 
   async function sendCancellation(b, { credited, byStudio, why }) {
-    const s = getSession(b.session_id);
+    const s = await getSession(db, b.session_id);
     const msgs = {
       client: 'Your booking has been cancelled and your spot has been released.',
       studio: `Your booking has been cancelled by the studio${why ? `: ${why}` : '.'}`,
@@ -384,15 +403,17 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
   }
 
   async function cancelByUser(user, bookingId) {
-    const b = q.booking.get(bookingId);
+    const b = await findBooking(db, bookingId);
     if (!b || b.user_id !== user.id) throw new BookingError('Booking not found.', 404);
-    const s = getSession(b.session_id);
+    const s = await getSession(db, b.session_id);
     if (!isActive(b)) throw new BookingError('This booking is already cancelled.', 409);
     if (!canCancel(b, s)) {
       throw new BookingError(`Online cancellation closes ${config.cancellationHours} hours before class. Please contact the studio.`, 409);
     }
-    const credited = releaseBooking(b, 'cancelled by client');
-    await sendCancellation(b, { credited, byStudio: 'client' });
+    const released = await releaseBooking(b.id, 'cancelled by client');
+    if (!released) throw new BookingError('This booking is already cancelled.', 409);
+    const { credited, before } = released;
+    await sendCancellation(before, { credited, byStudio: 'client' });
     if (config.adminNotifyEmail) {
       await mailer.send({
         to: config.adminNotifyEmail,
@@ -400,29 +421,31 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
         text: `${b.name} (${b.phone}, ${b.email}) cancelled.` + (credited ? ` ${money(credited)} was added to her credit.` : ''),
       });
     }
-    processWaitlist(s.id);
+    await processWaitlist(s.id);
     return { credited };
   }
 
   // ---------------------------------------------------------------- waitlist
 
-  function joinWaitlist(user, sessionId) {
-    const entry = transaction(db, () => {
-      const s = getSession(sessionId);
+  async function joinWaitlist(user, sessionId) {
+    const entry = await db.tx(async (t) => {
+      await t.lock('class_sessions', sessionId);
+      const s = await getSession(t, sessionId);
       if (!waitlistOpen(s)) throw new BookingError('This class is no longer taking waiting-list sign-ups.', 409);
-      if (seatsLeft(s) > 0 && bookingOpen(s)) throw new BookingError('Good news — a spot is available, you can book it now!', 409, { available: true });
-      if (db.prepare(`SELECT 1 FROM bookings WHERE session_id = ? AND user_id = ? AND status != 'cancelled'`).get(s.id, user.id)) {
+      if (await seatsLeft(t, s) > 0 && bookingOpen(s)) throw new BookingError('Good news — a spot is available, you can book it now!', 409, { available: true });
+      if (await t.get(`SELECT 1 AS x FROM bookings WHERE session_id = $1 AND user_id = $2 AND status != 'cancelled'`, [s.id, user.id])) {
         throw new BookingError('You are already booked into this class.', 409);
       }
-      if (db.prepare(`SELECT 1 FROM waitlist WHERE session_id = ? AND user_id = ? AND status IN ('waiting', 'offered')`).get(s.id, user.id)) {
+      if (await t.get(`SELECT 1 AS x FROM waitlist WHERE session_id = $1 AND user_id = $2 AND status IN ('waiting', 'offered')`, [s.id, user.id])) {
         throw new BookingError('You are already on the waiting list for this class.', 409);
       }
-      const r = db.prepare(`INSERT INTO waitlist (session_id, user_id, status, created_at) VALUES (?, ?, 'waiting', ?)`).run(s.id, user.id, now());
-      return q.waitlistEntry.get(r.lastInsertRowid);
+      const r = await t.run(`INSERT INTO waitlist (session_id, user_id, status, created_at) VALUES ($1, $2, 'waiting', $3) RETURNING id`,
+        [s.id, user.id, now()]);
+      return findWaitlist(t, r.id);
     });
-    const s = getSession(sessionId);
-    const position = waitlistPosition(entry);
-    mailer.send({
+    const s = await getSession(db, sessionId);
+    const position = await waitlistPosition(db, entry);
+    await mailer.send({
       to: user.email,
       subject: `You're on the waiting list: ${s.title}, ${formatClassTime(s.starts_at)}`,
       text: `Hi ${user.name},\n\nYou're number ${position} on the waiting list for:\n\n${describe(s)}\n\n` +
@@ -431,31 +454,32 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     return { id: entry.id, position };
   }
 
-  function waitlistPosition(w) {
-    return db.prepare(`SELECT COUNT(*) AS n FROM waitlist WHERE session_id = ? AND status IN ('waiting', 'offered') AND id <= ?`)
-      .get(w.session_id, w.id).n;
+  async function waitlistPosition(x, w) {
+    return Number((await x.get(`SELECT COUNT(*) AS n FROM waitlist WHERE session_id = $1 AND status IN ('waiting', 'offered') AND id <= $2`,
+      [w.session_id, w.id])).n);
   }
 
   // Offers free spots to the people at the front of the waiting list.
-  function processWaitlist(sessionId) {
-    const offers = transaction(db, () => {
-      const s = getSession(sessionId);
+  async function processWaitlist(sessionId) {
+    const offers = await db.tx(async (t) => {
+      await t.lock('class_sessions', sessionId);
+      const s = await getSession(t, sessionId);
       if (!waitlistOpen(s)) return [];
       const made = [];
-      let left = seatsLeft(s);
+      let left = await seatsLeft(t, s);
       while (left > 0) {
-        const w = q.nextWaiting.get(s.id);
+        const w = await t.get(`SELECT * FROM waitlist WHERE session_id = $1 AND status = 'waiting' ORDER BY id LIMIT 1`, [s.id]);
         if (!w) break;
         const expires = Math.min(now() + config.waitlistOfferHours * HOUR, hoursBefore(s, config.paymentDeadlineHours));
-        db.prepare(`UPDATE waitlist SET status = 'offered', offer_expires_at = ? WHERE id = ?`).run(expires, w.id);
-        made.push({ w: q.waitlistEntry.get(w.id), s });
+        await t.run(`UPDATE waitlist SET status = 'offered', offer_expires_at = $1 WHERE id = $2`, [expires, w.id]);
+        made.push({ w: { ...w, offer_expires_at: expires }, s });
         left--;
       }
       return made;
     });
     for (const { w, s } of offers) {
-      const u = q.user.get(w.user_id);
-      mailer.send({
+      const u = await findUser(db, w.user_id);
+      await mailer.send({
         to: u.email,
         subject: `A spot opened up: ${s.title}, ${formatClassTime(s.starts_at)}`,
         text: `Hi ${u.name},\n\nGood news — a spot has opened up and it's being held for you:\n\n${describe(s)}\n\n` +
@@ -466,41 +490,42 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     return offers.length;
   }
 
-  function claimOffer(user, waitlistId) {
-    return transaction(db, () => {
-      const w = q.waitlistEntry.get(waitlistId);
+  async function claimOffer(user, waitlistId) {
+    return db.tx(async (t) => {
+      await t.lock('waitlist', waitlistId);
+      const w = await findWaitlist(t, waitlistId);
       if (!w || w.user_id !== user.id) throw new BookingError('Waiting list entry not found.', 404);
       if (w.status !== 'offered' || w.offer_expires_at <= now()) throw new BookingError('Sorry, this offer is no longer available.', 409);
-      const s = getSession(w.session_id);
+      const s = await getSession(t, w.session_id);
       // The offered seat passes straight to the new booking, so no capacity check is needed.
-      db.prepare(`UPDATE waitlist SET status = 'booked' WHERE id = ?`).run(w.id);
-      const r = db.prepare(`
+      await t.run(`UPDATE waitlist SET status = 'booked' WHERE id = $1`, [w.id]);
+      const r = await t.run(`
         INSERT INTO bookings (session_id, user_id, name, email, phone, status, amount_minor, currency, waitlist_id, created_at)
-        VALUES (?, ?, ?, ?, ?, 'awaiting_payment', ?, ?, ?, ?)`)
-        .run(s.id, user.id, user.name, user.email, user.phone, s.price_minor, s.currency, w.id, now());
-      return { bookingId: Number(r.lastInsertRowid) };
+        VALUES ($1, $2, $3, $4, $5, 'awaiting_payment', $6, $7, $8, $9) RETURNING id`,
+      [s.id, user.id, user.name, user.email, user.phone, s.price_minor, s.currency, w.id, now()]);
+      return { bookingId: r.id };
     });
   }
 
-  function leaveWaitlist(user, waitlistId) {
-    const w = q.waitlistEntry.get(waitlistId);
+  async function leaveWaitlist(user, waitlistId) {
+    const w = await findWaitlist(db, waitlistId);
     if (!w || w.user_id !== user.id) throw new BookingError('Waiting list entry not found.', 404);
     if (!['waiting', 'offered'].includes(w.status)) throw new BookingError('You are not on this waiting list any more.', 409);
-    db.prepare(`UPDATE waitlist SET status = 'removed' WHERE id = ?`).run(w.id);
-    if (w.status === 'offered') processWaitlist(w.session_id);
+    await db.run(`UPDATE waitlist SET status = 'removed' WHERE id = $1`, [w.id]);
+    if (w.status === 'offered') await processWaitlist(w.session_id);
   }
 
   // ----------------------------------------------------------------- account
 
-  function myAccount(user) {
-    const u = q.user.get(user.id);
-    const bookings = db.prepare(`
+  async function myAccount(user) {
+    const u = await findUser(db, user.id);
+    const bookings = await db.all(`
       SELECT b.*, s.title, s.starts_at, s.duration_min, s.location, s.cancelled AS session_cancelled
       FROM bookings b JOIN class_sessions s ON s.id = b.session_id
-      WHERE b.user_id = ? ORDER BY s.starts_at`).all(u.id);
+      WHERE b.user_id = $1 ORDER BY s.starts_at`, [u.id]);
     const current = nowLocal();
     const view = (b) => {
-      const s = getSession(b.session_id);
+      const s = { starts_at: b.starts_at, cancelled: b.session_cancelled };
       return {
         id: b.id,
         title: b.title,
@@ -513,118 +538,134 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
         paidWith: b.paid_with,
         cancelReason: b.cancel_reason,
         canCancel: canCancel(b, s),
-        payBy: b.status === 'awaiting_payment' ? deadlineText(payDeadline(b)) : null,
+        payBy: b.status === 'awaiting_payment' ? deadlineText(hoursBefore(s, config.paymentDeadlineHours)) : null,
         past: b.starts_at <= current,
       };
     };
-    const waitlist = db.prepare(`
+    const waitRows = await db.all(`
       SELECT w.*, s.title, s.starts_at, s.duration_min FROM waitlist w JOIN class_sessions s ON s.id = w.session_id
-      WHERE w.user_id = ? AND w.status IN ('waiting', 'offered') AND s.starts_at > ? ORDER BY s.starts_at`).all(u.id, current);
-    const ledger = db.prepare('SELECT amount_minor, reason, created_at FROM credit_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(u.id);
-    const rejected = db.prepare(`SELECT reject_reason, reviewed_at FROM payments WHERE user_id = ? AND status = 'rejected' ORDER BY id DESC LIMIT 1`).get(u.id);
+      WHERE w.user_id = $1 AND w.status IN ('waiting', 'offered') AND s.starts_at > $2 ORDER BY s.starts_at`, [u.id, current]);
+    const waitlist = [];
+    for (const w of waitRows) {
+      waitlist.push({
+        id: w.id,
+        title: w.title,
+        startsAt: w.starts_at,
+        durationMinutes: w.duration_min,
+        status: w.offer_expires_at && w.offer_expires_at <= now() ? 'expired' : w.status,
+        position: await waitlistPosition(db, w),
+        offerExpires: w.status === 'offered' ? deadlineText(w.offer_expires_at) : null,
+      });
+    }
+    const ledger = await db.all('SELECT amount_minor, reason, created_at FROM credit_ledger WHERE user_id = $1 ORDER BY id DESC LIMIT 50', [u.id]);
+    const rejected = await db.get(`SELECT reject_reason FROM payments WHERE user_id = $1 AND status = 'rejected' ORDER BY id DESC LIMIT 1`, [u.id]);
     return {
       user: { email: u.email, name: u.name, phone: u.phone, injuries: u.injuries, activityLevel: u.activity_level },
       credit: money(u.credit_minor),
       creditMinor: u.credit_minor,
       upcoming: bookings.filter((b) => b.starts_at > current && b.status !== 'cancelled').map(view),
       history: bookings.filter((b) => b.starts_at <= current || b.status === 'cancelled').reverse().slice(0, 30).map(view),
-      waitlist: waitlist.map((w) => ({
-        id: w.id,
-        title: w.title,
-        startsAt: w.starts_at,
-        durationMinutes: w.duration_min,
-        status: w.offer_expires_at && w.offer_expires_at <= now() ? 'expired' : w.status,
-        position: waitlistPosition(w),
-        offerExpires: w.status === 'offered' ? deadlineText(w.offer_expires_at) : null,
-      })),
+      waitlist,
       ledger: ledger.map((l) => ({ amount: money(l.amount_minor), positive: l.amount_minor > 0, reason: l.reason, at: l.created_at })),
       lastRejection: rejected ? rejected.reject_reason : null,
       paymentInstructions: config.studio.paymentInstructions,
     };
   }
 
-  function bookingCalendar(user, bookingId) {
-    const b = q.booking.get(bookingId);
+  async function bookingCalendar(user, bookingId) {
+    const b = await findBooking(db, bookingId);
     if (!b || b.user_id !== user.id || b.status !== 'confirmed') throw new BookingError('Booking not found.', 404);
-    return bookingIcs({ booking: b, session: getSession(b.session_id), config });
+    return bookingIcs({ booking: b, session: await getSession(db, b.session_id), config });
   }
 
   // ----------------------------------------------------------- maintenance
 
   // Releases unpaid spots, sends payment reminders and passes on lapsed waitlist offers.
   async function sweep() {
-    const pending = db.prepare(`
+    const pending = await db.all(`
       SELECT b.* FROM bookings b JOIN class_sessions s ON s.id = b.session_id
-      WHERE b.status = 'awaiting_payment' AND s.starts_at > ?`).all(localString(now() - 24 * HOUR, tz));
+      WHERE b.status = 'awaiting_payment' AND s.starts_at > $1 ORDER BY b.id`, [localString(now() - 24 * HOUR, tz)]);
     for (const b of pending) {
-      const s = getSession(b.session_id);
+      const s = await getSession(db, b.session_id);
       if (hoursBefore(s, config.paymentDeadlineHours) <= now()) {
-        releaseBooking(b, 'unpaid');
-        await sendCancellation(b, { byStudio: 'unpaid' });
-        processWaitlist(s.id);
+        const released = await releaseBooking(b.id, 'unpaid');
+        if (!released) continue;
+        await sendCancellation(released.before, { byStudio: 'unpaid' });
+        await processWaitlist(s.id);
       } else if (!b.reminder_sent && hoursBefore(s, config.paymentReminderHours) <= now()) {
-        db.prepare('UPDATE bookings SET reminder_sent = 1 WHERE id = ?').run(b.id);
+        const r = await db.run('UPDATE bookings SET reminder_sent = 1 WHERE id = $1 AND reminder_sent = 0', [b.id]);
+        if (!r.changes) continue;
         await mailer.send({
           to: b.email,
           subject: `Reminder: payment needed for ${s.title}, ${formatClassTime(s.starts_at)}`,
           text: `Hi ${b.name},\n\nYour spot in ${s.title} on ${when(s)} is reserved but not paid yet.\n\n` +
-            `Please upload your transfer receipt by ${deadlineText(payDeadline(b))}, or the spot will be released: ${accountUrl('payments')}\n\n` +
+            `Please upload your transfer receipt by ${deadlineText(hoursBefore(s, config.paymentDeadlineHours))}, or the spot will be released: ${accountUrl('payments')}\n\n` +
             `${config.studio.paymentInstructions}` + sign,
         });
       }
     }
 
-    const lapsed = db.prepare(`SELECT * FROM waitlist WHERE status = 'offered' AND offer_expires_at <= ?`).all(now());
+    const lapsed = await db.all(`SELECT * FROM waitlist WHERE status = 'offered' AND offer_expires_at <= $1 ORDER BY id`, [now()]);
     for (const w of lapsed) {
-      db.prepare(`UPDATE waitlist SET status = 'expired' WHERE id = ?`).run(w.id);
-      const s = getSession(w.session_id);
-      const u = q.user.get(w.user_id);
-      mailer.send({
+      const r = await db.run(`UPDATE waitlist SET status = 'expired' WHERE id = $1 AND status = 'offered'`, [w.id]);
+      if (!r.changes) continue;
+      const s = await getSession(db, w.session_id);
+      const u = await findUser(db, w.user_id);
+      await mailer.send({
         to: u.email,
         subject: `Waiting list offer expired: ${s.title}`,
         text: `Hi ${u.name},\n\nThe spot we held for you in ${s.title} on ${when(s)} has been passed on to the next person on the waiting list.` + sign,
       });
-      processWaitlist(w.session_id);
+      await processWaitlist(w.session_id);
     }
   }
 
   // ------------------------------------------------------------------ admin
 
-  function adminSessions({ includePast = false } = {}) {
+  async function adminSessions({ includePast = false } = {}) {
     const rows = includePast
-      ? db.prepare('SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at DESC LIMIT 100').all(localString(now() - 60 * 86400_000, tz))
-      : db.prepare('SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at').all(localString(now() - 3 * HOUR, tz));
-    return rows.map((s) => ({
-      ...publicSession(s),
-      booked: db.prepare(`SELECT COUNT(*) AS n FROM bookings WHERE session_id = ? AND status IN ('awaiting_payment', 'payment_review', 'confirmed')`).get(s.id).n,
-      paid: db.prepare(`SELECT COUNT(*) AS n FROM bookings WHERE session_id = ? AND status = 'confirmed'`).get(s.id).n,
-      past: s.starts_at <= nowLocal(),
-    }));
+      ? await db.all('SELECT * FROM class_sessions WHERE starts_at > $1 ORDER BY starts_at DESC LIMIT 100', [localString(now() - 60 * 86400_000, tz)])
+      : await db.all('SELECT * FROM class_sessions WHERE starts_at > $1 ORDER BY starts_at', [localString(now() - 3 * HOUR, tz)]);
+    const out = [];
+    for (const s of rows) {
+      const counts = await db.get(`
+        SELECT
+          (SELECT COUNT(*) FROM bookings WHERE session_id = $1 AND status IN ('awaiting_payment', 'payment_review', 'confirmed')) AS booked,
+          (SELECT COUNT(*) FROM bookings WHERE session_id = $1 AND status = 'confirmed') AS paid`, [s.id]);
+      out.push({ ...(await publicSession(s)), booked: Number(counts.booked), paid: Number(counts.paid), past: s.starts_at <= nowLocal() });
+    }
+    return out;
   }
 
-  function adminSessionDetail(id) {
-    const s = getSession(id);
-    const bookings = db.prepare(`
+  async function adminSessionDetail(id) {
+    const s = await getSession(db, id);
+    const bookings = (await db.all(`
       SELECT b.id, b.name, b.email, b.phone, b.status, b.amount_minor, b.paid_with, b.payment_id, b.cancel_reason, b.created_at,
              u.injuries, u.activity_level
       FROM bookings b LEFT JOIN users u ON u.id = b.user_id
-      WHERE b.session_id = ? ORDER BY b.id`).all(s.id)
+      WHERE b.session_id = $1 ORDER BY b.id`, [s.id]))
       .map((b) => ({ ...b, amount: money(b.amount_minor) }));
-    const waitlist = db.prepare(`
+    const waitlist = await db.all(`
       SELECT w.id, w.status, w.offer_expires_at, w.created_at, u.name, u.email, u.phone, u.injuries, u.activity_level
-      FROM waitlist w JOIN users u ON u.id = w.user_id WHERE w.session_id = ? ORDER BY w.id`).all(s.id);
+      FROM waitlist w JOIN users u ON u.id = w.user_id WHERE w.session_id = $1 ORDER BY w.id`, [s.id]);
     return {
-      session: { ...publicSession(s), past: s.starts_at <= nowLocal(), payDeadline: deadlineText(hoursBefore(s, config.paymentDeadlineHours)) },
+      session: { ...(await publicSession(s)), past: s.starts_at <= nowLocal(), payDeadline: deadlineText(hoursBefore(s, config.paymentDeadlineHours)) },
       bookings,
       waitlist,
     };
   }
 
-  function adminPayments(status = 'pending_review') {
-    return db.prepare(`
+  async function adminPayments(status = 'pending_review') {
+    const rows = await db.all(`
       SELECT p.*, u.name, u.email, u.phone FROM payments p JOIN users u ON u.id = p.user_id
-      WHERE p.status = ? ORDER BY p.id ${status === 'pending_review' ? 'ASC' : 'DESC'} LIMIT 100`).all(status)
-      .map((p) => ({
+      WHERE p.status = $1 ORDER BY p.id ${status === 'pending_review' ? 'ASC' : 'DESC'} LIMIT 100`, [status]);
+    const out = [];
+    for (const p of rows) {
+      const bookings = (await db.all(`
+        SELECT b.id, b.status, b.amount_minor, s.title, s.starts_at, s.duration_min
+        FROM bookings b JOIN class_sessions s ON s.id = b.session_id WHERE b.payment_id = $1 ORDER BY s.starts_at`, [p.id]))
+        .map((b) => ({ ...b, amount: money(b.amount_minor) }));
+      out.push({
         id: p.id,
         name: p.name,
         email: p.email,
@@ -635,27 +676,27 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
         receiptName: p.receipt_name,
         receiptType: p.receipt_type,
         createdAt: p.created_at,
-        bookings: db.prepare(`
-          SELECT b.id, b.status, b.amount_minor, s.title, s.starts_at, s.duration_min
-          FROM bookings b JOIN class_sessions s ON s.id = b.session_id WHERE b.payment_id = ? ORDER BY s.starts_at`).all(p.id)
-          .map((b) => ({ ...b, amount: money(b.amount_minor) })),
-      }));
+        bookings,
+      });
+    }
+    return out;
   }
 
-  function receiptFor(paymentId, user) {
-    const p = q.payment.get(paymentId);
+  async function receiptFor(paymentId, user) {
+    const p = await findPayment(db, paymentId);
     if (!p || (user && p.user_id !== user.id)) throw new BookingError('Receipt not found.', 404);
     return p;
   }
 
   async function adminCancelBooking(bookingId, { credit = true, reason = '' } = {}) {
-    const b = q.booking.get(bookingId);
+    const b = await findBooking(db, bookingId);
     if (!b) throw new BookingError('Booking not found.', 404);
     if (!isActive(b)) throw new BookingError('Booking is not active.', 409);
-    const credited = releaseBooking(b, 'cancelled by studio', { credit });
-    await sendCancellation(b, { credited, byStudio: 'studio', why: String(reason || '').slice(0, 300) });
-    processWaitlist(b.session_id);
-    return { credited };
+    const released = await releaseBooking(b.id, 'cancelled by studio', { credit });
+    if (!released) throw new BookingError('Booking is not active.', 409);
+    await sendCancellation(released.before, { credited: released.credited, byStudio: 'studio', why: String(reason || '').slice(0, 300) });
+    await processWaitlist(b.session_id);
+    return { credited: released.credited };
   }
 
   async function adminAddBooking(sessionId, input = {}) {
@@ -664,93 +705,103 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     const phone = String(input.phone || '').trim().slice(0, 40);
     if (!name) throw new BookingError('Please enter a name.');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BookingError('Please enter a valid email address.');
-    const b = transaction(db, () => {
-      const s = getSession(sessionId);
-      if (seatsLeft(s) === 0 && !input.overbook) throw new BookingError('Class is full.', 409, { full: true });
-      const account = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-      const r = db.prepare(`
+    const b = await db.tx(async (t) => {
+      await t.lock('class_sessions', sessionId);
+      const s = await getSession(t, sessionId);
+      if (await seatsLeft(t, s) === 0 && !input.overbook) throw new BookingError('Class is full.', 409, { full: true });
+      const account = await t.get('SELECT id FROM users WHERE email = $1', [email]);
+      const r = await t.run(`
         INSERT INTO bookings (session_id, user_id, name, email, phone, status, amount_minor, currency, paid_with, created_at, confirmed_at)
-        VALUES (?, ?, ?, ?, ?, 'confirmed', ?, ?, 'manual', ?, ?)`)
-        .run(s.id, account?.id ?? null, name, email, phone, s.price_minor, s.currency, now(), now());
-      return q.booking.get(r.lastInsertRowid);
+        VALUES ($1, $2, $3, $4, $5, 'confirmed', $6, $7, 'manual', $8, $9) RETURNING id`,
+      [s.id, account?.id ?? null, name, email, phone, s.price_minor, s.currency, now(), now()]);
+      return findBooking(t, r.id);
     });
     await sendConfirmation(b);
     return b;
   }
 
-  function adminSetCapacity(sessionId, capacity) {
+  async function adminSetCapacity(sessionId, capacity) {
     const cap = Number(capacity);
     if (!Number.isInteger(cap) || cap < 0 || cap > 500) throw new BookingError('Capacity must be a whole number.');
-    getSession(sessionId);
-    db.prepare('UPDATE class_sessions SET capacity = ? WHERE id = ?').run(cap, sessionId);
-    processWaitlist(sessionId);
+    await getSession(db, sessionId);
+    await db.run('UPDATE class_sessions SET capacity = $1 WHERE id = $2', [cap, sessionId]);
+    await processWaitlist(sessionId);
   }
 
   // Cancels a whole class: paid clients get credit, everyone is emailed.
   async function adminCancelClass(sessionId, { reason = '' } = {}) {
-    const s = getSession(sessionId);
+    const s = await getSession(db, sessionId);
     const why = String(reason || '').slice(0, 300) || 'the class has been cancelled';
-    db.prepare('UPDATE class_sessions SET cancelled = 1 WHERE id = ?').run(s.id);
-    const active = db.prepare(`SELECT * FROM bookings WHERE session_id = ? AND status IN ('awaiting_payment', 'payment_review', 'confirmed')`).all(s.id);
+    await db.run('UPDATE class_sessions SET cancelled = 1 WHERE id = $1', [s.id]);
+    const active = await db.all(`SELECT id FROM bookings WHERE session_id = $1 AND status IN ('awaiting_payment', 'payment_review', 'confirmed') ORDER BY id`, [s.id]);
     let creditedTotal = 0;
-    for (const b of active) {
-      const credited = releaseBooking(b, 'class cancelled');
-      creditedTotal += credited;
-      await sendCancellation(b, { credited, byStudio: 'studio', why });
+    let cancelled = 0;
+    for (const { id } of active) {
+      const released = await releaseBooking(id, 'class cancelled');
+      if (!released) continue;
+      cancelled++;
+      creditedTotal += released.credited;
+      await sendCancellation(released.before, { credited: released.credited, byStudio: 'studio', why });
     }
-    const waiting = db.prepare(`
-      SELECT w.*, u.name, u.email FROM waitlist w JOIN users u ON u.id = w.user_id
-      WHERE w.session_id = ? AND w.status IN ('waiting', 'offered')`).all(s.id);
+    const waiting = await db.all(`
+      SELECT w.id, u.name, u.email FROM waitlist w JOIN users u ON u.id = w.user_id
+      WHERE w.session_id = $1 AND w.status IN ('waiting', 'offered')`, [s.id]);
     for (const w of waiting) {
-      db.prepare(`UPDATE waitlist SET status = 'removed' WHERE id = ?`).run(w.id);
-      mailer.send({
+      await db.run(`UPDATE waitlist SET status = 'removed' WHERE id = $1`, [w.id]);
+      await mailer.send({
         to: w.email,
         subject: `Class cancelled: ${s.title}, ${formatClassTime(s.starts_at)}`,
         text: `Hi ${w.name},\n\nThe class you were waiting for has been cancelled: ${why}.\n\n${describe(s)}` + sign,
       });
     }
-    return { cancelledBookings: active.length, credited: money(creditedTotal) };
+    return { cancelledBookings: cancelled, credited: money(creditedTotal) };
   }
 
-  function adminRemoveWaitlist(id) {
-    const w = q.waitlistEntry.get(id);
+  async function adminRemoveWaitlist(id) {
+    const w = await findWaitlist(db, id);
     if (!w) throw new BookingError('Not found.', 404);
-    db.prepare(`UPDATE waitlist SET status = 'removed' WHERE id = ?`).run(w.id);
-    if (w.status === 'offered') processWaitlist(w.session_id);
+    await db.run(`UPDATE waitlist SET status = 'removed' WHERE id = $1`, [w.id]);
+    if (w.status === 'offered') await processWaitlist(w.session_id);
   }
 
   // ---------------------------------------------------------------- clients
 
-  function adminClients(search = '') {
+  async function adminClients(search = '') {
     const term = `%${String(search).trim().toLowerCase().slice(0, 100)}%`;
-    return db.prepare(`
+    const rows = await db.all(`
       SELECT u.id, u.email, u.name, u.phone, u.injuries, u.activity_level, u.credit_minor, u.created_at,
         (SELECT COUNT(*) FROM bookings b WHERE b.user_id = u.id AND b.status = 'confirmed') AS paid_classes,
         (SELECT COUNT(*) FROM bookings b JOIN class_sessions s ON s.id = b.session_id
-           WHERE b.user_id = u.id AND b.status IN ('awaiting_payment', 'payment_review', 'confirmed') AND s.starts_at > :now) AS upcoming,
+           WHERE b.user_id = u.id AND b.status IN ('awaiting_payment', 'payment_review', 'confirmed') AND s.starts_at > $2) AS upcoming,
         (SELECT COUNT(*) FROM bookings b WHERE b.user_id = u.id AND b.status = 'awaiting_payment') AS unpaid
       FROM users u
-      WHERE lower(u.name) LIKE :term OR lower(u.email) LIKE :term OR u.phone LIKE :term
-      ORDER BY u.created_at DESC LIMIT 500`).all({ term, now: nowLocal() })
-      .map((u) => ({ ...u, credit: money(u.credit_minor) }));
+      WHERE lower(u.name) LIKE $1 OR lower(u.email) LIKE $1 OR u.phone LIKE $1
+      ORDER BY u.created_at DESC, u.id DESC LIMIT 500`, [term, nowLocal()]);
+    return rows.map((u) => ({
+      ...u,
+      paid_classes: Number(u.paid_classes),
+      upcoming: Number(u.upcoming),
+      unpaid: Number(u.unpaid),
+      credit: money(u.credit_minor),
+    }));
   }
 
-  function adminClientDetail(id) {
-    const u = q.user.get(id);
+  async function adminClientDetail(id) {
+    const u = await findUser(db, id);
     if (!u) throw new BookingError('Client not found.', 404);
-    const bookings = db.prepare(`
+    const bookings = (await db.all(`
       SELECT b.id, b.status, b.paid_with, b.amount_minor, b.cancel_reason, s.title, s.starts_at, s.duration_min
       FROM bookings b JOIN class_sessions s ON s.id = b.session_id
-      WHERE b.user_id = ? ORDER BY s.starts_at DESC LIMIT 100`).all(u.id)
+      WHERE b.user_id = $1 ORDER BY s.starts_at DESC LIMIT 100`, [u.id]))
       .map((b) => ({ ...b, amount: money(b.amount_minor), past: b.starts_at <= nowLocal() }));
-    const ledger = db.prepare('SELECT amount_minor, reason, created_at FROM credit_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(u.id)
+    const ledger = (await db.all('SELECT amount_minor, reason, created_at FROM credit_ledger WHERE user_id = $1 ORDER BY id DESC LIMIT 50', [u.id]))
       .map((l) => ({ amount: money(l.amount_minor), positive: l.amount_minor > 0, reason: l.reason, at: l.created_at }));
     return { bookings, ledger };
   }
 
   // ------------------------------------------------------- class schedules
 
-  function cleanClass(input = {}, { oneOff = false } = {}) {
+  async function cleanClass(input = {}, { oneOff = false } = {}) {
     const title = String(input.title || '').trim().slice(0, 80);
     const description = String(input.description || '').trim().slice(0, 300);
     const time = String(input.time || '');
@@ -776,8 +827,8 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     return out;
   }
 
-  function listTemplates() {
-    return db.prepare('SELECT * FROM class_templates ORDER BY active DESC, weekday, time').all().map((t) => ({
+  async function listTemplates() {
+    return (await db.all('SELECT * FROM class_templates ORDER BY active DESC, weekday, "time"')).map((t) => ({
       id: t.id,
       title: t.title,
       description: t.description,
@@ -790,47 +841,48 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     }));
   }
 
-  function addTemplate(input) {
-    const c = cleanClass(input);
-    db.prepare(`INSERT INTO class_templates (title, description, weekday, time, duration_min, capacity, price_minor, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(c.title, c.description, c.weekday, c.time, c.durationMin, c.capacity, c.priceMinor, now());
-    syncSessions();
+  async function addTemplate(input) {
+    const c = await cleanClass(input);
+    await db.run(`INSERT INTO class_templates (title, description, weekday, "time", duration_min, capacity, price_minor, created_at)
+                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [c.title, c.description, c.weekday, c.time, c.durationMin, c.capacity, c.priceMinor, now()]);
+    await syncSessions();
   }
 
   // Future dates of a weekly class that nobody has booked or waitlisted are rebuilt from the new
   // details; dates that already have bookings keep their original time so nobody is moved silently.
-  function editTemplate(id, input) {
-    const t = db.prepare('SELECT * FROM class_templates WHERE id = ?').get(id);
-    if (!t) throw new BookingError('Class not found.', 404);
-    const active = input.active === undefined ? Boolean(t.active) : Boolean(input.active);
-    const c = cleanClass(input);
-    let kept = 0;
-    transaction(db, () => {
-      db.prepare(`UPDATE class_templates SET title = ?, description = ?, weekday = ?, time = ?, duration_min = ?, capacity = ?,
-                  price_minor = ?, active = ? WHERE id = ?`)
-        .run(c.title, c.description, c.weekday, c.time, c.durationMin, c.capacity, c.priceMinor, active ? 1 : 0, id);
-      const future = db.prepare('SELECT * FROM class_sessions WHERE template_id = ? AND starts_at > ? AND cancelled = 0').all(id, nowLocal());
+  async function editTemplate(id, input) {
+    const t0 = await db.get('SELECT * FROM class_templates WHERE id = $1', [id]);
+    if (!t0) throw new BookingError('Class not found.', 404);
+    const active = input.active === undefined ? Boolean(t0.active) : Boolean(input.active);
+    const c = await cleanClass(input);
+    const kept = await db.tx(async (t) => {
+      await t.run(`UPDATE class_templates SET title = $1, description = $2, weekday = $3, "time" = $4, duration_min = $5, capacity = $6,
+                   price_minor = $7, active = $8 WHERE id = $9`,
+      [c.title, c.description, c.weekday, c.time, c.durationMin, c.capacity, c.priceMinor, active ? 1 : 0, id]);
+      const future = await t.all('SELECT * FROM class_sessions WHERE template_id = $1 AND starts_at > $2 AND cancelled = 0', [id, nowLocal()]);
+      let n = 0;
       for (const s of future) {
-        const used = db.prepare('SELECT (SELECT COUNT(*) FROM bookings WHERE session_id = ?) + (SELECT COUNT(*) FROM waitlist WHERE session_id = ?) AS n')
-          .get(s.id, s.id).n;
-        if (used) {
-          kept++;
-          db.prepare('UPDATE class_sessions SET title = ?, description = ? WHERE id = ?').run(c.title, c.description, s.id);
+        const { used } = await t.get(`SELECT (SELECT COUNT(*) FROM bookings WHERE session_id = $1)
+                                           + (SELECT COUNT(*) FROM waitlist WHERE session_id = $1) AS used`, [s.id]);
+        if (Number(used)) {
+          n++;
+          await t.run('UPDATE class_sessions SET title = $1, description = $2 WHERE id = $3', [c.title, c.description, s.id]);
         } else {
-          db.prepare('DELETE FROM class_sessions WHERE id = ?').run(s.id);
+          await t.run('DELETE FROM class_sessions WHERE id = $1', [s.id]);
         }
       }
+      return n;
     });
-    syncSessions();
+    await syncSessions();
     return { keptWithBookings: kept };
   }
 
-  function addOneOffClass(input) {
-    const c = cleanClass(input, { oneOff: true });
-    db.prepare(`INSERT INTO class_sessions (template_id, title, description, location, starts_at, duration_min, capacity, price_minor, currency, created_at)
-                VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(c.title, c.description, config.studio.location, `${c.date}T${c.time}`, c.durationMin, c.capacity, c.priceMinor, currency, now());
+  async function addOneOffClass(input) {
+    const c = await cleanClass(input, { oneOff: true });
+    await db.run(`INSERT INTO class_sessions (template_id, title, description, location, starts_at, duration_min, capacity, price_minor, currency, created_at)
+                  VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [c.title, c.description, config.studio.location, `${c.date}T${c.time}`, c.durationMin, c.capacity, c.priceMinor, currency, now()]);
   }
 
   return {

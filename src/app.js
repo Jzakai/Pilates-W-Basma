@@ -1,5 +1,4 @@
 const crypto = require('node:crypto');
-const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
 const multer = require('multer');
@@ -66,7 +65,7 @@ function rateLimit({ max, windowMs }) {
 // Wraps async handlers so thrown errors reach the error middleware.
 const h = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-function createApp({ config, service, accounts }) {
+function createApp({ config, service, accounts, storage }) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -76,12 +75,9 @@ function createApp({ config, service, accounts }) {
     next();
   });
 
-  fs.mkdirSync(config.uploadDir, { recursive: true });
+  // Receipts are held in memory (max a few MB) and then handed to storage.
   const upload = multer({
-    storage: multer.diskStorage({
-      destination: config.uploadDir,
-      filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex') + RECEIPT_TYPES[file.mimetype]),
-    }),
+    storage: multer.memoryStorage(),
     limits: { fileSize: config.maxUploadMb * 1024 * 1024, files: 1 },
     fileFilter: (req, file, cb) => {
       if (RECEIPT_TYPES[file.mimetype]) return cb(null, true);
@@ -95,10 +91,10 @@ function createApp({ config, service, accounts }) {
   });
 
   // Attaches the signed-in client (if any) to req.user.
-  app.use((req, res, next) => {
-    req.user = accounts.userFromToken(readCookie(req, COOKIE));
+  app.use(h(async (req, res, next) => {
+    req.user = await accounts.userFromToken(readCookie(req, COOKIE));
     next();
-  });
+  }));
   const requireUser = (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'Please sign in first.', signIn: true });
     next();
@@ -132,27 +128,27 @@ function createApp({ config, service, accounts }) {
     });
   });
 
-  app.get('/api/sessions', (req, res) => res.json(service.listUpcoming(req.user)));
+  app.get('/api/sessions', h(async (req, res) => res.json(await service.listUpcoming(req.user))));
 
   // ------------------------------------------------------------------ auth
 
-  app.post('/api/auth/signup', authLimit, (req, res) => {
-    const { user, token } = accounts.signUp(req.body);
+  app.post('/api/auth/signup', authLimit, h(async (req, res) => {
+    const { user, token } = await accounts.signUp(req.body);
     setSession(res, token);
     res.json({ user });
-  });
+  }));
 
-  app.post('/api/auth/signin', authLimit, (req, res) => {
-    const { user, token } = accounts.signIn(req.body);
+  app.post('/api/auth/signin', authLimit, h(async (req, res) => {
+    const { user, token } = await accounts.signIn(req.body);
     setSession(res, token);
     res.json({ user });
-  });
+  }));
 
-  app.post('/api/auth/signout', (req, res) => {
-    accounts.signOut(readCookie(req, COOKIE));
+  app.post('/api/auth/signout', h(async (req, res) => {
+    await accounts.signOut(readCookie(req, COOKIE));
     res.clearCookie(COOKIE, { path: '/' });
     res.json({ ok: true });
-  });
+  }));
 
   app.get('/api/auth/me', (req, res) => res.json({ user: req.user ? accounts.publicUser(req.user) : null }));
 
@@ -161,17 +157,19 @@ function createApp({ config, service, accounts }) {
     res.json({ ok: true });
   }));
 
-  app.post('/api/auth/reset', authLimit, (req, res) => {
-    const { user, token } = accounts.resetPassword(req.body.token, req.body.password);
+  app.post('/api/auth/reset', authLimit, h(async (req, res) => {
+    const { user, token } = await accounts.resetPassword(req.body.token, req.body.password);
     setSession(res, token);
     res.json({ user });
-  });
+  }));
 
   // ---------------------------------------------------------------- client
 
-  app.get('/api/me', requireUser, (req, res) => res.json(service.myAccount(req.user)));
+  app.get('/api/me', requireUser, h(async (req, res) => res.json(await service.myAccount(req.user))));
 
-  app.post('/api/me/profile', requireUser, (req, res) => res.json({ user: accounts.updateProfile(req.user.id, req.body) }));
+  app.post('/api/me/profile', requireUser, h(async (req, res) => {
+    res.json({ user: await accounts.updateProfile(req.user.id, req.body) });
+  }));
 
   app.post('/api/bookings', requireUser, h(async (req, res) => {
     res.json(await service.bookClasses(req.user, req.body.sessionIds));
@@ -181,50 +179,73 @@ function createApp({ config, service, accounts }) {
     res.json(await service.cancelByUser(req.user, Number(req.params.id)));
   }));
 
-  app.get('/api/bookings/:id/calendar.ics', requireUser, (req, res) => {
-    res.type('text/calendar').attachment('pilates-class.ics').send(service.bookingCalendar(req.user, Number(req.params.id)));
-  });
+  app.get('/api/bookings/:id/calendar.ics', requireUser, h(async (req, res) => {
+    const ics = await service.bookingCalendar(req.user, Number(req.params.id));
+    res.type('text/calendar').attachment('pilates-class.ics').send(ics);
+  }));
 
   app.post('/api/payments', requireUser, upload.single('receipt'), h(async (req, res) => {
     let ids = req.body.bookingIds;
     if (typeof ids === 'string') ids = ids.split(',');
+    let file = null;
+    if (req.file) {
+      file = {
+        key: crypto.randomBytes(16).toString('hex') + RECEIPT_TYPES[req.file.mimetype],
+        originalname: req.file.originalname,
+        mimetype: req.file.mimetype,
+      };
+      await storage.save(file.key, req.file.buffer, file.mimetype);
+    }
+    const discard = () => file && storage.remove(file.key).catch((err) => console.error('Could not remove receipt:', err.message));
+    let result;
     try {
-      res.json(await service.payBookings(req.user, {
+      result = await service.payBookings(req.user, {
         bookingIds: ids,
         useCredits: req.body.useCredits === 'true' || req.body.useCredits === true,
-        file: req.file,
-      }));
+        file,
+      });
     } catch (err) {
-      if (req.file) fs.rm(req.file.path, { force: true }, () => {});
+      discard();
       throw err;
     }
+    if (!result.paymentId) discard(); // everything was paid with credit
+    res.json(result);
   }));
 
-  const sendReceipt = (res, p) => {
+  const sendReceipt = async (res, p) => {
+    const data = await storage.read(p.receipt_file);
+    if (!data) throw new BookingError('The receipt file could not be found.', 404);
     res.type(p.receipt_type);
     res.set('Content-Disposition', `inline; filename="receipt-${p.id}${path.extname(p.receipt_file)}"`);
-    res.sendFile(path.join(config.uploadDir, path.basename(p.receipt_file)));
+    res.set('Cache-Control', 'private, no-store');
+    res.send(data);
   };
 
-  app.get('/api/payments/:id/receipt', requireUser, (req, res) => sendReceipt(res, service.receiptFor(Number(req.params.id), req.user)));
+  app.get('/api/payments/:id/receipt', requireUser, h(async (req, res) => {
+    await sendReceipt(res, await service.receiptFor(Number(req.params.id), req.user));
+  }));
 
-  app.post('/api/sessions/:id/waitlist', requireUser, (req, res) => res.json(service.joinWaitlist(req.user, Number(req.params.id))));
-  app.post('/api/waitlist/:id/claim', requireUser, (req, res) => res.json(service.claimOffer(req.user, Number(req.params.id))));
-  app.post('/api/waitlist/:id/leave', requireUser, (req, res) => {
-    service.leaveWaitlist(req.user, Number(req.params.id));
+  app.post('/api/sessions/:id/waitlist', requireUser, h(async (req, res) => {
+    res.json(await service.joinWaitlist(req.user, Number(req.params.id)));
+  }));
+  app.post('/api/waitlist/:id/claim', requireUser, h(async (req, res) => {
+    res.json(await service.claimOffer(req.user, Number(req.params.id)));
+  }));
+  app.post('/api/waitlist/:id/leave', requireUser, h(async (req, res) => {
+    await service.leaveWaitlist(req.user, Number(req.params.id));
     res.json({ ok: true });
-  });
+  }));
 
   // ----------------------------------------------------------------- admin
 
   const admin = express.Router();
   admin.use(adminAuth(config));
-  admin.get('/sessions', (req, res) => res.json(service.adminSessions({ includePast: req.query.past === '1' })));
-  admin.get('/sessions/:id', (req, res) => res.json(service.adminSessionDetail(Number(req.params.id))));
-  admin.post('/sessions/:id/capacity', (req, res) => {
-    service.adminSetCapacity(Number(req.params.id), req.body.capacity);
+  admin.get('/sessions', h(async (req, res) => res.json(await service.adminSessions({ includePast: req.query.past === '1' }))));
+  admin.get('/sessions/:id', h(async (req, res) => res.json(await service.adminSessionDetail(Number(req.params.id)))));
+  admin.post('/sessions/:id/capacity', h(async (req, res) => {
+    await service.adminSetCapacity(Number(req.params.id), req.body.capacity);
     res.json({ ok: true });
-  });
+  }));
   admin.post('/sessions/:id/cancel', h(async (req, res) => {
     res.json(await service.adminCancelClass(Number(req.params.id), { reason: req.body.reason }));
   }));
@@ -235,26 +256,26 @@ function createApp({ config, service, accounts }) {
   admin.post('/bookings/:id/cancel', h(async (req, res) => {
     res.json(await service.adminCancelBooking(Number(req.params.id), { credit: req.body.credit !== false, reason: req.body.reason }));
   }));
-  admin.post('/waitlist/:id/remove', (req, res) => {
-    service.adminRemoveWaitlist(Number(req.params.id));
+  admin.post('/waitlist/:id/remove', h(async (req, res) => {
+    await service.adminRemoveWaitlist(Number(req.params.id));
     res.json({ ok: true });
-  });
-  admin.get('/payments', (req, res) => res.json(service.adminPayments(String(req.query.status || 'pending_review'))));
-  admin.get('/payments/:id/receipt', (req, res) => sendReceipt(res, service.receiptFor(Number(req.params.id))));
+  }));
+  admin.get('/payments', h(async (req, res) => res.json(await service.adminPayments(String(req.query.status || 'pending_review')))));
+  admin.get('/payments/:id/receipt', h(async (req, res) => sendReceipt(res, await service.receiptFor(Number(req.params.id)))));
   admin.post('/payments/:id/approve', h(async (req, res) => res.json(await service.approvePayment(Number(req.params.id)))));
   admin.post('/payments/:id/reject', h(async (req, res) => res.json(await service.rejectPayment(Number(req.params.id), req.body.reason))));
-  admin.get('/clients', (req, res) => res.json(service.adminClients(req.query.q || '')));
-  admin.get('/clients/:id', (req, res) => res.json(service.adminClientDetail(Number(req.params.id))));
-  admin.get('/templates', (req, res) => res.json(service.listTemplates()));
-  admin.post('/templates', (req, res) => {
-    service.addTemplate(req.body);
+  admin.get('/clients', h(async (req, res) => res.json(await service.adminClients(String(req.query.q || '')))));
+  admin.get('/clients/:id', h(async (req, res) => res.json(await service.adminClientDetail(Number(req.params.id)))));
+  admin.get('/templates', h(async (req, res) => res.json(await service.listTemplates())));
+  admin.post('/templates', h(async (req, res) => {
+    await service.addTemplate(req.body);
     res.json({ ok: true });
-  });
-  admin.post('/templates/:id', (req, res) => res.json(service.editTemplate(Number(req.params.id), req.body)));
-  admin.post('/classes', (req, res) => {
-    service.addOneOffClass(req.body);
+  }));
+  admin.post('/templates/:id', h(async (req, res) => res.json(await service.editTemplate(Number(req.params.id), req.body))));
+  admin.post('/classes', h(async (req, res) => {
+    await service.addOneOffClass(req.body);
     res.json({ ok: true });
-  });
+  }));
   app.use('/api/admin', admin);
 
   // ---------------------------------------------------------- static pages
