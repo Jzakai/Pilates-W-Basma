@@ -1,7 +1,20 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
-const { BookingError } = require('./bookings');
+const multer = require('multer');
+const { BookingError } = require('./errors');
+const { ACTIVITY_LEVELS } = require('./accounts');
+
+const RECEIPT_TYPES = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
+  'application/pdf': '.pdf',
+};
+const COOKIE = 'sid';
 
 function safeEqual(a, b) {
   const ha = crypto.createHash('sha256').update(a).digest();
@@ -25,42 +38,75 @@ function adminAuth(config) {
   };
 }
 
-// Wraps async handlers so thrown errors reach the error middleware.
-const h = (fn) => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
+function readCookie(req, name) {
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v.join('='));
+  }
+  return null;
+}
 
-function createApp({ config, service, payments }) {
+// Small in-memory limiter for sign-in / sign-up / reset attempts.
+function rateLimit({ max, windowMs }) {
+  const hits = new Map();
+  return (req, res, next) => {
+    const key = req.ip;
+    const now = Date.now();
+    const entry = hits.get(key);
+    if (!entry || entry.reset < now) {
+      hits.set(key, { count: 1, reset: now + windowMs });
+      if (hits.size > 10_000) hits.clear();
+      return next();
+    }
+    if (++entry.count > max) return res.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' });
+    next();
+  };
+}
+
+// Wraps async handlers so thrown errors reach the error middleware.
+const h = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+function createApp({ config, service, accounts }) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
-
-  // Stripe needs the raw body to verify the webhook signature, so this route comes before express.json().
-  app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), h(async (req, res) => {
-    if (payments.name !== 'stripe') return res.status(404).end();
-    let event;
-    try {
-      event = payments.constructWebhookEvent(req.body, req.headers['stripe-signature']);
-    } catch (err) {
-      return res.status(400).send(`Webhook error: ${err.message}`);
-    }
-    const checkout = event.data.object;
-    if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
-      await service.completeCheckout(checkout.id);
-    } else if (event.type === 'checkout.session.expired') {
-      await service.checkoutExpired(checkout.id);
-    }
-    res.json({ received: true });
-  }));
-
   app.use(express.json({ limit: '20kb' }));
+  app.use((req, res, next) => {
+    res.set('X-Content-Type-Options', 'nosniff');
+    next();
+  });
 
-  // Moyasar calls this when an invoice is paid. Ids in the body are re-verified with Moyasar's API.
-  app.post('/api/moyasar/webhook', h(async (req, res) => {
-    if (payments.name !== 'moyasar') return res.status(404).end();
-    for (const id of payments.invoiceIdsFromEvent(req.body || {})) await service.completeCheckout(id);
-    res.json({ received: true });
-  }));
+  fs.mkdirSync(config.uploadDir, { recursive: true });
+  const upload = multer({
+    storage: multer.diskStorage({
+      destination: config.uploadDir,
+      filename: (req, file, cb) => cb(null, crypto.randomBytes(16).toString('hex') + RECEIPT_TYPES[file.mimetype]),
+    }),
+    limits: { fileSize: config.maxUploadMb * 1024 * 1024, files: 1 },
+    fileFilter: (req, file, cb) => {
+      if (RECEIPT_TYPES[file.mimetype]) return cb(null, true);
+      cb(new BookingError('Please upload the receipt as a photo (JPG, PNG, HEIC) or a PDF.'));
+    },
+  });
 
-  // ---------------------------------------------------------------- public API
+  const secure = config.baseUrl.startsWith('https://');
+  const setSession = (res, token) => res.cookie(COOKIE, token, {
+    httpOnly: true, sameSite: 'lax', secure, maxAge: 60 * 86400_000, path: '/',
+  });
+
+  // Attaches the signed-in client (if any) to req.user.
+  app.use((req, res, next) => {
+    req.user = accounts.userFromToken(readCookie(req, COOKIE));
+    next();
+  });
+  const requireUser = (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'Please sign in first.', signIn: true });
+    next();
+  };
+
+  const authLimit = rateLimit({ max: 20, windowMs: 10 * 60_000 });
+
+  // ----------------------------------------------------------------- public
 
   app.get('/api/studio', (req, res) => {
     const { studio } = config;
@@ -76,46 +122,100 @@ function createApp({ config, service, payments }) {
       contactPhone: studio.contactPhone,
       instagram: studio.instagram,
       timezone: studio.timezone,
+      paymentInstructions: studio.paymentInstructions,
+      bookingCutoffHours: config.bookingCutoffHours,
+      paymentDeadlineHours: config.paymentDeadlineHours,
       cancellationHours: config.cancellationHours,
       waitlistOfferHours: config.waitlistOfferHours,
-      demoPayments: payments.name === 'demo',
-      onlinePayments: payments.name,
-      bankTransfer: studio.bankTransfer.enabled,
+      activityLevels: ACTIVITY_LEVELS,
+      maxUploadMb: config.maxUploadMb,
     });
   });
 
-  app.get('/api/sessions', (req, res) => res.json(service.listUpcoming()));
+  app.get('/api/sessions', (req, res) => res.json(service.listUpcoming(req.user)));
 
-  app.post('/api/sessions/:id/book', h(async (req, res) => {
-    res.json(await service.startBooking(Number(req.params.id), req.body));
-  }));
+  // ------------------------------------------------------------------ auth
 
-  app.post('/api/sessions/:id/waitlist', (req, res) => {
-    res.json(service.joinWaitlist(Number(req.params.id), req.body));
+  app.post('/api/auth/signup', authLimit, (req, res) => {
+    const { user, token } = accounts.signUp(req.body);
+    setSession(res, token);
+    res.json({ user });
   });
 
-  app.get('/api/bookings/:token', h(async (req, res) => {
-    res.json(await service.refreshBooking(req.params.token));
-  }));
+  app.post('/api/auth/signin', authLimit, (req, res) => {
+    const { user, token } = accounts.signIn(req.body);
+    setSession(res, token);
+    res.json({ user });
+  });
 
-  app.post('/api/bookings/:token/cancel', h(async (req, res) => {
-    res.json(await service.cancelByCustomer(req.params.token));
-  }));
+  app.post('/api/auth/signout', (req, res) => {
+    accounts.signOut(readCookie(req, COOKIE));
+    res.clearCookie(COOKIE, { path: '/' });
+    res.json({ ok: true });
+  });
 
-  app.post('/api/demo-pay/:token', h(async (req, res) => {
-    await service.demoPay(req.params.token);
+  app.get('/api/auth/me', (req, res) => res.json({ user: req.user ? accounts.publicUser(req.user) : null }));
+
+  app.post('/api/auth/forgot', authLimit, h(async (req, res) => {
+    await accounts.requestPasswordReset(req.body.email);
     res.json({ ok: true });
   }));
 
-  app.get('/api/waitlist/:token', (req, res) => res.json(service.waitlistView(req.params.token)));
+  app.post('/api/auth/reset', authLimit, (req, res) => {
+    const { user, token } = accounts.resetPassword(req.body.token, req.body.password);
+    setSession(res, token);
+    res.json({ user });
+  });
 
-  app.post('/api/waitlist/:token/claim', h(async (req, res) => {
-    res.json(await service.claimOffer(req.params.token, { paymentMethod: req.body.paymentMethod }));
+  // ---------------------------------------------------------------- client
+
+  app.get('/api/me', requireUser, (req, res) => res.json(service.myAccount(req.user)));
+
+  app.post('/api/me/profile', requireUser, (req, res) => res.json({ user: accounts.updateProfile(req.user.id, req.body) }));
+
+  app.post('/api/bookings', requireUser, h(async (req, res) => {
+    res.json(await service.bookClasses(req.user, req.body.sessionIds));
   }));
 
-  app.post('/api/waitlist/:token/leave', (req, res) => res.json(service.leaveWaitlist(req.params.token)));
+  app.post('/api/bookings/:id/cancel', requireUser, h(async (req, res) => {
+    res.json(await service.cancelByUser(req.user, Number(req.params.id)));
+  }));
 
-  // ----------------------------------------------------------------- admin API
+  app.get('/api/bookings/:id/calendar.ics', requireUser, (req, res) => {
+    res.type('text/calendar').attachment('pilates-class.ics').send(service.bookingCalendar(req.user, Number(req.params.id)));
+  });
+
+  app.post('/api/payments', requireUser, upload.single('receipt'), h(async (req, res) => {
+    let ids = req.body.bookingIds;
+    if (typeof ids === 'string') ids = ids.split(',');
+    try {
+      res.json(await service.payBookings(req.user, {
+        bookingIds: ids,
+        useCredits: req.body.useCredits === 'true' || req.body.useCredits === true,
+        file: req.file,
+      }));
+    } catch (err) {
+      if (req.file) fs.rm(req.file.path, { force: true }, () => {});
+      throw err;
+    }
+  }));
+
+  const sendReceipt = (res, p) => {
+    res.type(p.receipt_type);
+    res.set('Content-Disposition', `inline; filename="receipt-${p.id}${path.extname(p.receipt_file)}"`);
+    res.sendFile(path.join(config.uploadDir, path.basename(p.receipt_file)));
+  };
+
+  app.get('/api/payments/:id/receipt', requireUser, (req, res) => sendReceipt(res, service.receiptFor(Number(req.params.id), req.user)));
+
+  app.post('/api/sessions/:id/waitlist', requireUser, (req, res) => res.json(service.joinWaitlist(req.user, Number(req.params.id))));
+  app.post('/api/waitlist/:id/claim', requireUser, (req, res) => res.json(service.claimOffer(req.user, Number(req.params.id))));
+  app.post('/api/waitlist/:id/leave', requireUser, (req, res) => {
+    service.leaveWaitlist(req.user, Number(req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ----------------------------------------------------------------- admin
 
   const admin = express.Router();
   admin.use(adminAuth(config));
@@ -126,27 +226,36 @@ function createApp({ config, service, payments }) {
     res.json({ ok: true });
   });
   admin.post('/sessions/:id/cancel', h(async (req, res) => {
-    res.json(await service.adminCancelSession(Number(req.params.id), { reason: String(req.body.reason || '').slice(0, 300) }));
+    res.json(await service.adminCancelClass(Number(req.params.id), { reason: req.body.reason }));
   }));
   admin.post('/sessions/:id/bookings', h(async (req, res) => {
     await service.adminAddBooking(Number(req.params.id), req.body);
     res.json({ ok: true });
   }));
   admin.post('/bookings/:id/cancel', h(async (req, res) => {
-    const refunded = await service.adminCancelBooking(Number(req.params.id), { refund: Boolean(req.body.refund) });
-    res.json({ ok: true, refunded });
-  }));
-  admin.post('/bookings/:id/paid', h(async (req, res) => {
-    await service.adminMarkPaid(Number(req.params.id));
-    res.json({ ok: true });
+    res.json(await service.adminCancelBooking(Number(req.params.id), { credit: req.body.credit !== false, reason: req.body.reason }));
   }));
   admin.post('/waitlist/:id/remove', (req, res) => {
     service.adminRemoveWaitlist(Number(req.params.id));
     res.json({ ok: true });
   });
+  admin.get('/payments', (req, res) => res.json(service.adminPayments(String(req.query.status || 'pending_review'))));
+  admin.get('/payments/:id/receipt', (req, res) => sendReceipt(res, service.receiptFor(Number(req.params.id))));
+  admin.post('/payments/:id/approve', h(async (req, res) => res.json(await service.approvePayment(Number(req.params.id)))));
+  admin.post('/payments/:id/reject', h(async (req, res) => res.json(await service.rejectPayment(Number(req.params.id), req.body.reason))));
+  admin.get('/templates', (req, res) => res.json(service.listTemplates()));
+  admin.post('/templates', (req, res) => {
+    service.addTemplate(req.body);
+    res.json({ ok: true });
+  });
+  admin.post('/templates/:id', (req, res) => res.json(service.editTemplate(Number(req.params.id), req.body)));
+  admin.post('/classes', (req, res) => {
+    service.addOneOffClass(req.body);
+    res.json({ ok: true });
+  });
   app.use('/api/admin', admin);
 
-  // -------------------------------------------------------------- static pages
+  // ---------------------------------------------------------- static pages
 
   app.get(['/admin', '/admin.html'], adminAuth(config), (req, res) => {
     res.sendFile(path.join(config.root, 'public', 'admin.html'));
@@ -160,6 +269,10 @@ function createApp({ config, service, payments }) {
     if (err instanceof BookingError) {
       const { message, status, ...extra } = err;
       return res.status(status).json({ error: message, ...extra });
+    }
+    if (err instanceof multer.MulterError) {
+      const msg = err.code === 'LIMIT_FILE_SIZE' ? `The receipt must be smaller than ${config.maxUploadMb} MB.` : 'The upload could not be read.';
+      return res.status(400).json({ error: msg });
     }
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid request.' });
     console.error(err);

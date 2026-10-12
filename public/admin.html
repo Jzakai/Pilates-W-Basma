@@ -32,10 +32,15 @@
     .stats { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 8px; }
     .stats div { font-size: 0.85rem; color: var(--muted); }
     .stats strong { display: block; font-size: 1.5rem; color: var(--ink); font-family: var(--serif); }
+    .class-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 12px; align-items: end; }
+    .class-form .wide { grid-column: 1 / -1; }
+    .receipt { display: grid; grid-template-columns: 220px 1fr; gap: 20px; }
+    .receipt img { width: 100%; border-radius: 10px; border: 1px solid var(--line); }
+    @media (max-width: 700px) { .receipt { grid-template-columns: 1fr; } }
     .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
   </style>
 </head>
-<body>
+<body data-no-account>
   <header class="site-header">
     <div class="wrap">
       <a class="brand" href="/" data-studio-name>Pilates w Basma</a>
@@ -43,14 +48,52 @@
     </div>
   </header>
   <main class="wrap admin">
-    <div class="toolbar">
-      <h2 style="margin:0">Classes</h2>
-      <label style="margin:0;font-weight:500"><input type="checkbox" id="show-past" style="display:inline;width:auto;margin:0 6px 0 0">Show past classes</label>
+    <div class="week-tabs" role="tablist" id="admin-tabs">
+      <button role="tab" data-tab="classes" aria-selected="true">Classes</button>
+      <button role="tab" data-tab="receipts" aria-selected="false">Receipts <span id="receipt-count"></span></button>
+      <button role="tab" data-tab="schedule" aria-selected="false">Class schedule</button>
     </div>
-    <div class="admin-grid">
-      <div class="list" id="session-list"><p style="padding:16px">Loading…</p></div>
-      <div id="detail"><div class="empty">Select a class to see bookings and the waiting list.</div></div>
-    </div>
+
+    <section data-panel="classes">
+      <div class="toolbar">
+        <h2 style="margin:0">Classes</h2>
+        <label style="margin:0;font-weight:500"><input type="checkbox" id="show-past" style="display:inline;width:auto;margin:0 6px 0 0">Show past classes</label>
+      </div>
+      <div class="admin-grid">
+        <div class="list" id="session-list"><p style="padding:16px">Loading…</p></div>
+        <div id="detail"><div class="empty">Select a class to see bookings and the waiting list.</div></div>
+      </div>
+    </section>
+
+    <section data-panel="receipts" hidden>
+      <div class="toolbar">
+        <h2 style="margin:0">Receipts</h2>
+        <select id="receipt-filter" style="width:auto;margin:0">
+          <option value="pending_review">To check</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+        </select>
+      </div>
+      <div id="receipts"></div>
+    </section>
+
+    <section data-panel="schedule" hidden>
+      <div class="toolbar"><h2 style="margin:0">Class schedule</h2></div>
+      <div class="card">
+        <h3>Weekly classes</h3>
+        <p class="fine">These repeat every week and are published 4 weeks ahead. Changing a time only moves dates nobody has booked yet.</p>
+        <div id="templates"></div>
+      </div>
+      <div class="card">
+        <h3 id="template-form-title">Add a weekly class</h3>
+        <form id="template-form" class="class-form"></form>
+      </div>
+      <div class="card">
+        <h3>Add a one-off class</h3>
+        <p class="fine">For an extra class on a single date, e.g. a workshop or a make-up class.</p>
+        <form id="oneoff-form" class="class-form"></form>
+      </div>
+    </section>
   </main>
   <script src="/js/common.js"></script>
   <script src="/js/admin.js"></script>

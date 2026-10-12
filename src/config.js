@@ -55,10 +55,8 @@ function loadSchedule(file = process.env.SCHEDULE_PATH || path.join(ROOT, 'sched
       timezone: studio.timezone || 'UTC',
       currency: (studio.currency || 'usd').toLowerCase(),
       weeksAhead: studio.weeksAhead || 4,
-      bankTransfer: {
-        enabled: Boolean(studio.bankTransfer?.enabled),
-        instructions: studio.bankTransfer?.instructions || '',
-      },
+      // Bank / STC Pay details shown to clients when they pay.
+      paymentInstructions: studio.paymentInstructions || '',
     },
     classes,
   };
@@ -66,20 +64,20 @@ function loadSchedule(file = process.env.SCHEDULE_PATH || path.join(ROOT, 'sched
 
 const env = process.env;
 
+const hours = (name, fallback) => (env[name] === undefined || env[name] === '' ? fallback : Number(env[name]));
+
+const databasePath = env.DATABASE_PATH || path.join(ROOT, 'data', 'bookings.db');
+
 const config = {
   root: ROOT,
   port: Number(env.PORT) || 3000,
   // RENDER_EXTERNAL_URL is set automatically on Render.
   baseUrl: (env.BASE_URL || env.RENDER_EXTERNAL_URL || `http://localhost:${Number(env.PORT) || 3000}`).replace(/\/$/, ''),
   adminPassword: env.ADMIN_PASSWORD || '',
-  databasePath: env.DATABASE_PATH || path.join(ROOT, 'data', 'bookings.db'),
-  // moyasar | stripe | demo. Defaults to whichever gateway has a key configured.
-  paymentProvider: (env.PAYMENT_PROVIDER ||
-    (env.MOYASAR_SECRET_KEY ? 'moyasar' : env.STRIPE_SECRET_KEY ? 'stripe' : 'demo')).toLowerCase(),
-  moyasarSecretKey: env.MOYASAR_SECRET_KEY || '',
-  moyasarWebhookSecret: env.MOYASAR_WEBHOOK_SECRET || '',
-  stripeSecretKey: env.STRIPE_SECRET_KEY || '',
-  stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET || '',
+  databasePath,
+  // Receipts are stored next to the database so they live on the same persistent disk.
+  uploadDir: env.UPLOAD_DIR || path.join(path.dirname(databasePath), 'receipts'),
+  maxUploadMb: Number(env.MAX_UPLOAD_MB) || 8,
   smtp: {
     host: env.SMTP_HOST || '',
     port: Number(env.SMTP_PORT) || 587,
@@ -88,15 +86,13 @@ const config = {
   },
   emailFrom: env.EMAIL_FROM || 'bookings@example.com',
   adminNotifyEmail: env.ADMIN_NOTIFY_EMAIL || '',
-  waitlistOfferHours: Number(env.WAITLIST_OFFER_HOURS) || 12,
-  // How long a bank-transfer booking holds its spot while waiting for the money.
-  transferHoldHours: Number(env.TRANSFER_HOLD_HOURS) || 24,
-  cancellationHours: env.CANCELLATION_HOURS === undefined ? 12 : Number(env.CANCELLATION_HOURS),
-  refundOnCancel: (env.REFUND_ON_CANCEL || 'true').toLowerCase() !== 'false',
-  // Seat hold while the customer is on the payment page. Stripe Checkout sessions
-  // must last at least 30 minutes, so the hold is a little longer than that.
-  checkoutMinutes: 31,
-  holdMinutes: 35,
+
+  // Booking rules (all in hours before the class starts unless noted).
+  bookingCutoffHours: hours('BOOKING_CUTOFF_HOURS', 48),      // online booking closes
+  paymentDeadlineHours: hours('PAYMENT_DEADLINE_HOURS', 24),  // unpaid bookings are released
+  paymentReminderHours: hours('PAYMENT_REMINDER_HOURS', 48),  // reminder for unpaid bookings
+  cancellationHours: hours('CANCELLATION_HOURS', 12),         // clients can cancel online until
+  waitlistOfferHours: hours('WAITLIST_OFFER_HOURS', 12),      // time to claim a freed spot
   ...loadSchedule(),
 };
 

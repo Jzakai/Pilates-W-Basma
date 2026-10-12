@@ -1,53 +1,40 @@
-const crypto = require('node:crypto');
 const { transaction } = require('./db');
 const { localString, localToEpoch, upcomingDates } = require('./time');
-const { toMinor, formatMoney, formatClassTime } = require('./format');
+const { toMinor, formatMoney, formatClassTime, minorUnitFactor } = require('./format');
+const { bookingIcs } = require('./calendar');
+const { BookingError } = require('./errors');
 
-class BookingError extends Error {
-  constructor(message, status = 400, extra = {}) {
-    super(message);
-    this.status = status;
-    Object.assign(this, extra);
-  }
-}
+const HOUR = 3600_000;
+const ACTIVE = ['awaiting_payment', 'payment_review', 'confirmed'];
+const PAID_METHODS = ['transfer', 'credit', 'manual'];
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-// strict = the public booking / waiting-list forms, where phone and "first time?" are required.
-function cleanCustomer(input = {}, { strict = true } = {}) {
-  const name = String(input.name || '').trim().slice(0, 100);
-  const email = String(input.email || '').trim().toLowerCase().slice(0, 200);
-  const phone = String(input.phone || '').trim().slice(0, 40);
-  const notes = String(input.notes || '').trim().slice(0, 500);
-  const firstTime = ['yes', 'no'].includes(input.firstTime) ? input.firstTime : '';
-  if (!name) throw new BookingError('Please enter your name.');
-  if (!EMAIL_RE.test(email)) throw new BookingError('Please enter a valid email address.');
-  if (strict && !/^\+?[\d\s()-]{7,}$/.test(phone)) throw new BookingError('Please enter your phone / WhatsApp number.');
-  if (strict && !firstTime) throw new BookingError('Please tell us if this is your first time doing Pilates.');
-  return { name, email, phone, notes, firstTime };
-}
-
-const newToken = () => crypto.randomBytes(24).toString('base64url');
-
-function createBookingService({ db, config, payments, mailer, now = () => Date.now() }) {
+function createBookingService({ db, config, mailer, now = () => Date.now() }) {
   const tz = config.studio.timezone;
+  const currency = config.studio.currency;
   const nowLocal = () => localString(now(), tz);
-  const localIn = (hours) => localString(now() + hours * 3600_000, tz);
+  const startsMs = (s) => localToEpoch(s.starts_at, tz);
+  const hoursBefore = (s, h) => startsMs(s) - h * HOUR;
+  const money = (minor) => formatMoney(minor, currency);
+  const when = (s) => formatClassTime(s.starts_at, s.duration_min);
+  const deadlineText = (ms) => new Date(ms).toLocaleString('en-GB', {
+    timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit', hour12: true,
+  });
+  const sign = `\n\nSee you on the mat,\n${config.studio.instructor || config.studio.name}`;
+  const accountUrl = (section = '') => `${config.baseUrl}/account.html${section ? '#' + section : ''}`;
 
   const q = {
     session: db.prepare('SELECT * FROM class_sessions WHERE id = ?'),
     booking: db.prepare('SELECT * FROM bookings WHERE id = ?'),
-    bookingByToken: db.prepare('SELECT * FROM bookings WHERE token = ?'),
-    bookingByCheckout: db.prepare('SELECT * FROM bookings WHERE checkout_id = ?'),
-    waitlistById: db.prepare('SELECT * FROM waitlist WHERE id = ?'),
-    waitlistByToken: db.prepare('SELECT * FROM waitlist WHERE token = ?'),
+    user: db.prepare('SELECT * FROM users WHERE id = ?'),
+    payment: db.prepare('SELECT * FROM payments WHERE id = ?'),
+    waitlistEntry: db.prepare('SELECT * FROM waitlist WHERE id = ?'),
     seatsTaken: db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM bookings WHERE session_id = :id
-           AND (status = 'confirmed' OR (status = 'pending' AND hold_expires_at > :now)))
+           AND status IN ('awaiting_payment', 'payment_review', 'confirmed'))
       + (SELECT COUNT(*) FROM waitlist WHERE session_id = :id
            AND status = 'offered' AND offer_expires_at > :now) AS taken`),
-    waitingCount: db.prepare(`SELECT COUNT(*) AS n FROM waitlist WHERE session_id = ? AND status IN ('waiting', 'offered', 'claiming')`),
+    waitingCount: db.prepare(`SELECT COUNT(*) AS n FROM waitlist WHERE session_id = ? AND status IN ('waiting', 'offered')`),
     nextWaiting: db.prepare(`SELECT * FROM waitlist WHERE session_id = ? AND status = 'waiting' ORDER BY id LIMIT 1`),
   };
 
@@ -59,23 +46,41 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
     return s;
   }
 
-  function seatsLeft(session) {
-    const { taken } = q.seatsTaken.get({ id: session.id, now: now() });
-    return Math.max(0, session.capacity - taken);
+  function seatsLeft(s) {
+    return Math.max(0, s.capacity - q.seatsTaken.get({ id: s.id, now: now() }).taken);
   }
 
-  function isBookable(session) {
-    return !session.cancelled && session.starts_at > nowLocal();
+  const bookingOpen = (s) => !s.cancelled && hoursBefore(s, config.bookingCutoffHours) > now();
+  const waitlistOpen = (s) => !s.cancelled && hoursBefore(s, config.paymentDeadlineHours) > now();
+  const isActive = (b) => ACTIVE.includes(b.status);
+
+  function describe(s) {
+    return `${s.title}\n${when(s)}${s.location ? `\n${s.location}` : ''}`;
   }
 
-  function describe(session) {
-    return `${session.title}\n${formatClassTime(session.starts_at, session.duration_min)}` +
-      (session.location ? `\n${session.location}` : '');
+  function addCredit(userId, amount, reason, bookingId = null) {
+    if (!userId || !amount) return;
+    db.prepare('UPDATE users SET credit_minor = credit_minor + ? WHERE id = ?').run(amount, userId);
+    db.prepare('INSERT INTO credit_ledger (user_id, amount_minor, reason, booking_id, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(userId, amount, reason, bookingId, now());
   }
 
-  function publicSession(s) {
+  async function sendConfirmation(b) {
+    const s = getSession(b.session_id);
+    const how = { credit: ' (paid with credit)', transfer: ' (bank transfer)', manual: '', free: '' }[b.paid_with] ?? '';
+    await mailer.send({
+      to: b.email,
+      subject: `Booking confirmed: ${s.title}, ${formatClassTime(s.starts_at)}`,
+      text: `Hi ${b.name},\n\nYour spot is confirmed${how}.\n\n${describe(s)}\n\n` +
+        `A calendar invite is attached. Manage your bookings: ${accountUrl('bookings')}\n` +
+        `(You can cancel online until ${config.cancellationHours} hours before class.)` + sign,
+      icalEvent: { method: 'PUBLISH', filename: 'pilates-class.ics', content: bookingIcs({ booking: b, session: s, config }) },
+    });
+  }
+
+  function publicSession(s, userId) {
     const left = seatsLeft(s);
-    return {
+    const out = {
       id: s.id,
       title: s.title,
       description: s.description,
@@ -86,456 +91,485 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
       spotsLeft: left,
       full: left === 0,
       waitlistCount: q.waitingCount.get(s.id).n,
-      price: formatMoney(s.price_minor, s.currency),
+      price: money(s.price_minor),
+      priceMinor: s.price_minor,
       cancelled: Boolean(s.cancelled),
+      bookingOpen: bookingOpen(s),
+      waitlistOpen: waitlistOpen(s),
     };
+    if (userId) {
+      const mine = db.prepare(`SELECT status FROM bookings WHERE session_id = ? AND user_id = ? AND status != 'cancelled'`).get(s.id, userId);
+      const wait = db.prepare(`SELECT status FROM waitlist WHERE session_id = ? AND user_id = ? AND status IN ('waiting', 'offered')`).get(s.id, userId);
+      out.myBooking = mine?.status ?? null;
+      out.myWaitlist = wait?.status ?? null;
+    }
+    return out;
   }
 
-  const manageUrl = (b) => `${config.baseUrl}/booking.html?token=${b.token}`;
-  const claimUrl = (w) => `${config.baseUrl}/waitlist.html?token=${w.token}`;
-  const sign = `\n\nSee you on the mat,\n${config.studio.instructor || config.studio.name}`;
+  // ------------------------------------------------------------- timetable
 
-  // -------------------------------------------------------------- schedule
+  // Loads the weekly classes from schedule.json the first time the site runs.
+  function seedTemplates() {
+    if (db.prepare('SELECT COUNT(*) AS n FROM class_templates').get().n > 0) return;
+    const insert = db.prepare(`INSERT INTO class_templates (title, description, weekday, time, duration_min, capacity, price_minor, created_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const c of config.classes) {
+      insert.run(c.title, c.description, c.weekday, c.time, c.durationMinutes, c.capacity, toMinor(c.price, currency), now());
+    }
+  }
 
-  // Creates class sessions for the coming weeks from the weekly timetable.
-  // Existing sessions are left alone, so edits to the timetable only affect new dates.
+  // Creates dated classes for the coming weeks from the active weekly classes.
   function syncSessions() {
+    const templates = db.prepare('SELECT * FROM class_templates WHERE active = 1').all();
     const insert = db.prepare(`
       INSERT OR IGNORE INTO class_sessions
-        (class_key, title, description, location, starts_at, duration_min, capacity, price_minor, currency, created_at)
+        (template_id, title, description, location, starts_at, duration_min, capacity, price_minor, currency, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    const dates = upcomingDates(now(), tz, config.studio.weeksAhead * 7);
     const current = nowLocal();
     let created = 0;
     transaction(db, () => {
-      for (const { date, weekday } of dates) {
-        for (const c of config.classes) {
-          if (c.weekday !== weekday) continue;
-          const startsAt = `${date}T${c.time}`;
+      for (const { date, weekday } of upcomingDates(now(), tz, config.studio.weeksAhead * 7)) {
+        for (const t of templates) {
+          if (t.weekday !== weekday) continue;
+          const startsAt = `${date}T${t.time}`;
           if (startsAt <= current) continue;
-          const r = insert.run(c.key, c.title, c.description, c.location, startsAt, c.durationMinutes,
-            c.capacity, toMinor(c.price, config.studio.currency), config.studio.currency, now());
-          created += Number(r.changes);
+          created += Number(insert.run(t.id, t.title, t.description, config.studio.location, startsAt, t.duration_min,
+            t.capacity, t.price_minor, currency, now()).changes);
         }
       }
     });
     return created;
   }
 
-  function listUpcoming() {
-    return db
-      .prepare('SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at, id')
+  function listUpcoming(user) {
+    return db.prepare('SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at, id')
       .all(nowLocal())
-      .map(publicSession);
+      .map((s) => publicSession(s, user?.id));
   }
 
-  // ---------------------------------------------------------------- booking
+  // --------------------------------------------------------------- booking
 
-  // Reserves a seat and returns where to send the customer to pay.
-  const transferEnabled = () => config.studio.bankTransfer.enabled;
+  async function bookClasses(user, sessionIds) {
+    const ids = [...new Set((Array.isArray(sessionIds) ? sessionIds : [sessionIds]).map(Number))].filter(Boolean);
+    if (!ids.length) throw new BookingError('Please choose at least one class.');
+    if (ids.length > 20) throw new BookingError('Please book at most 20 classes at a time.');
 
-  async function startBooking(sessionId, input, { waitlistEntry = null, strict = true } = {}) {
-    const customer = cleanCustomer(input, { strict });
-    const byTransfer = input.paymentMethod === 'transfer';
-    if (byTransfer && !transferEnabled()) throw new BookingError('Bank transfer is not available — please pay online.');
-    let session;
-    const booking = transaction(db, () => {
-      session = getSession(sessionId);
-      if (!isBookable(session)) throw new BookingError('This class is no longer open for booking.', 409);
-
-      const existing = db.prepare(`
-        SELECT * FROM bookings WHERE session_id = ? AND email = ? AND status IN ('pending', 'confirmed')`)
-        .all(session.id, customer.email);
-      if (existing.some((b) => b.status === 'confirmed')) {
-        throw new BookingError('You already have a confirmed booking for this class.', 409);
+    const booked = [];
+    const failed = [];
+    for (const id of ids) {
+      try {
+        booked.push(transaction(db, () => {
+          const s = getSession(id);
+          if (s.cancelled) throw new BookingError('This class has been cancelled.');
+          if (!bookingOpen(s)) throw new BookingError(`Online booking closes ${config.bookingCutoffHours} hours before class.`);
+          const dup = db.prepare(`SELECT 1 FROM bookings WHERE session_id = ? AND user_id = ? AND status != 'cancelled'`).get(s.id, user.id);
+          if (dup) throw new BookingError('You are already booked into this class.');
+          if (seatsLeft(s) === 0) throw new BookingError('This class is full.', 409, { full: true });
+          const free = s.price_minor === 0;
+          const r = db.prepare(`
+            INSERT INTO bookings (session_id, user_id, name, email, phone, status, amount_minor, currency, paid_with, created_at, confirmed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .run(s.id, user.id, user.name, user.email, user.phone, free ? 'confirmed' : 'awaiting_payment',
+              s.price_minor, s.currency, free ? 'free' : null, now(), free ? now() : null);
+          return q.booking.get(r.lastInsertRowid);
+        }));
+      } catch (err) {
+        if (!(err instanceof BookingError)) throw err;
+        failed.push({ sessionId: id, error: err.message, full: Boolean(err.full) });
       }
-      // An abandoned checkout from the same person: release it so they can start again.
-      for (const b of existing) releaseBooking(b, 'expired', { notify: false, refill: false });
-
-      if (!waitlistEntry && seatsLeft(session) === 0) {
-        throw new BookingError('Sorry, this class is fully booked.', 409, { full: true });
-      }
-
-      const amount = session.price_minor;
-      const provider = amount === 0 ? 'free' : byTransfer ? 'transfer' : payments.name;
-      const token = newToken();
-      // A transfer reservation lasts transferHoldHours, but never past the start of class.
-      const holdUntil = provider === 'transfer'
-        ? Math.min(now() + config.transferHoldHours * 3600_000, localToEpoch(session.starts_at, tz))
-        : now() + config.holdMinutes * 60_000;
-      const r = db.prepare(`
-        INSERT INTO bookings (session_id, name, email, phone, first_time, notes, status, token, amount_minor, currency,
-                              hold_expires_at, payment_provider, waitlist_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`)
-        .run(session.id, customer.name, customer.email, customer.phone, customer.firstTime, customer.notes, token, amount,
-          session.currency, holdUntil, provider, waitlistEntry?.id ?? null, now());
-      if (waitlistEntry) {
-        // The offered seat is now held by the pending booking instead.
-        db.prepare(`UPDATE waitlist SET status = 'claiming' WHERE id = ?`).run(waitlistEntry.id);
-      }
-      return q.booking.get(r.lastInsertRowid);
-    });
-
-    if (booking.payment_provider === 'free') {
-      await confirmBooking(booking.id, null);
-      return { bookingToken: booking.token, redirectUrl: manageUrl(booking) + '&new=1' };
     }
 
-    if (booking.payment_provider === 'transfer') {
-      await sendTransferInstructions(booking, session);
-      return { bookingToken: booking.token, redirectUrl: manageUrl(booking) + '&new=1' };
-    }
-
-    try {
-      const checkout = await payments.createCheckout({
-        booking,
-        session,
-        successUrl: `${config.baseUrl}/booking.html?token=${booking.token}&new=1`,
-        cancelUrl: `${config.baseUrl}/booking.html?token=${booking.token}&cancelled_checkout=1`,
-        expiresAtMs: now() + config.checkoutMinutes * 60_000,
+    const unpaid = booked.filter((b) => b.status === 'awaiting_payment');
+    for (const b of booked.filter((x) => x.status === 'confirmed')) await sendConfirmation(b);
+    if (unpaid.length) {
+      const lines = unpaid.map((b) => {
+        const s = getSession(b.session_id);
+        return `- ${s.title}, ${when(s)}: ${money(b.amount_minor)} (pay by ${deadlineText(hoursBefore(s, config.paymentDeadlineHours))})`;
       });
-      db.prepare('UPDATE bookings SET checkout_id = ? WHERE id = ?').run(checkout.id, booking.id);
-      return { bookingToken: booking.token, redirectUrl: checkout.url };
-    } catch (err) {
-      console.error('Could not create checkout:', err.message);
-      releaseBooking(q.booking.get(booking.id), 'expired', { notify: false });
-      throw new BookingError('We could not start the payment. Please try again in a moment.', 502);
+      await mailer.send({
+        to: user.email,
+        subject: `Spot${unpaid.length > 1 ? 's' : ''} reserved — payment needed`,
+        text: `Hi ${user.name},\n\nWe've reserved your spot${unpaid.length > 1 ? 's' : ''} in:\n\n${lines.join('\n')}\n\n` +
+          `To confirm, transfer the fee and upload your receipt in "Pending payments":\n${accountUrl('payments')}\n\n` +
+          `${config.studio.paymentInstructions}\n\nUnpaid spots are released ${config.paymentDeadlineHours} hours before class.` + sign,
+      });
     }
-  }
-
-  const formatDeadline = (ms) => new Date(ms).toLocaleString('en-GB', {
-    timeZone: tz, weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit', hour12: true,
-  });
-
-  async function sendTransferInstructions(b, s) {
-    const deadline = formatDeadline(b.hold_expires_at);
-    await mailer.send({
-      to: b.email,
-      subject: `Spot reserved — payment needed: ${s.title}, ${formatClassTime(s.starts_at)}`,
-      text: `Hi ${b.name},\n\nYour spot is reserved for:\n\n${describe(s)}\n\n` +
-        `To confirm it, please send ${formatMoney(b.amount_minor, b.currency)} by ${deadline}:\n\n` +
-        `${config.studio.bankTransfer.instructions}\n\n` +
-        `If payment isn't received by then, the spot will be released to the next person.\n` +
-        `View or cancel your booking: ${manageUrl(b)}` + sign,
-    });
-    if (config.adminNotifyEmail) {
+    if (booked.length && config.adminNotifyEmail) {
       await mailer.send({
         to: config.adminNotifyEmail,
-        subject: `Awaiting transfer: ${b.name}, ${s.title} ${formatClassTime(s.starts_at)}`,
-        text: `${b.name} (${b.phone}, ${b.email}) reserved a spot and will pay by bank transfer / STC Pay.\n` +
-          `Mark it as paid in the dashboard once the money arrives: ${config.baseUrl}/admin`,
+        subject: `New booking: ${user.name} (${booked.length} class${booked.length > 1 ? 'es' : ''})`,
+        text: `${user.name} (${user.email}, ${user.phone}) booked:\n` +
+          booked.map((b) => { const s = getSession(b.session_id); return `- ${s.title}, ${when(s)}`; }).join('\n'),
       });
     }
+    return { booked: booked.map((b) => b.id), failed };
   }
 
-  async function confirmBooking(bookingId, paymentRef) {
+  // -------------------------------------------------------------- payments
+
+  const payDeadline = (b) => hoursBefore(getSession(b.session_id), config.paymentDeadlineHours);
+
+  // Pays for one or more bookings: credit first if asked, then one receipt for the rest.
+  async function payBookings(user, { bookingIds, useCredits, file }) {
+    const ids = [...new Set((Array.isArray(bookingIds) ? bookingIds : [bookingIds]).map(Number))].filter(Boolean);
+    if (!ids.length) throw new BookingError('Please choose the classes you are paying for.');
+
     const result = transaction(db, () => {
-      const b = q.booking.get(bookingId);
-      if (!b) throw new BookingError('Booking not found.', 404);
-      if (b.status === 'confirmed') return { booking: b, changed: false };
-      // A payment that lands after the hold lapsed is still honoured — the customer paid.
-      db.prepare(`UPDATE bookings SET status = 'confirmed', payment_ref = COALESCE(?, payment_ref),
-                  confirmed_at = ?, hold_expires_at = NULL WHERE id = ?`).run(paymentRef, now(), b.id);
-      if (b.waitlist_id) db.prepare(`UPDATE waitlist SET status = 'booked' WHERE id = ?`).run(b.waitlist_id);
-      return { booking: q.booking.get(b.id), changed: true };
+      const fresh = q.user.get(user.id);
+      const list = ids.map((id) => q.booking.get(id));
+      for (const b of list) {
+        if (!b || b.user_id !== user.id) throw new BookingError('Booking not found.', 404);
+        if (b.status !== 'awaiting_payment') throw new BookingError('One of these classes is not waiting for payment any more. Please refresh.', 409);
+        if (payDeadline(b) <= now()) throw new BookingError('The payment deadline for one of these classes has passed.', 409);
+      }
+      list.sort((a, b) => startsMs(getSession(a.session_id)) - startsMs(getSession(b.session_id)));
+
+      let balance = useCredits ? fresh.credit_minor : 0;
+      const byCredit = [];
+      const byTransfer = [];
+      for (const b of list) {
+        if (balance >= b.amount_minor) {
+          byCredit.push(b);
+          balance -= b.amount_minor;
+        } else {
+          byTransfer.push(b);
+        }
+      }
+      if (byTransfer.length && !file) {
+        throw new BookingError('Please attach your bank transfer receipt.', 400, { needsReceipt: true });
+      }
+
+      for (const b of byCredit) {
+        db.prepare(`UPDATE bookings SET status = 'confirmed', paid_with = 'credit', confirmed_at = ? WHERE id = ?`).run(now(), b.id);
+        addCredit(user.id, -b.amount_minor, 'Paid for a class', b.id);
+      }
+      let paymentId = null;
+      if (byTransfer.length) {
+        const amount = byTransfer.reduce((sum, b) => sum + b.amount_minor, 0);
+        paymentId = Number(db.prepare(`
+          INSERT INTO payments (user_id, amount_minor, currency, receipt_file, receipt_name, receipt_type, status, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, 'pending_review', ?)`)
+          .run(user.id, amount, currency, file.filename, file.originalname.slice(0, 200), file.mimetype, now()).lastInsertRowid);
+        for (const b of byTransfer) {
+          db.prepare(`UPDATE bookings SET status = 'payment_review', payment_id = ? WHERE id = ?`).run(paymentId, b.id);
+        }
+      }
+      return { byCredit: byCredit.map((b) => b.id), byTransfer: byTransfer.map((b) => b.id), paymentId };
     });
 
-    if (result.changed) {
-      const b = result.booking;
-      const s = getSession(b.session_id);
+    for (const id of result.byCredit) await sendConfirmation(q.booking.get(id));
+    if (result.paymentId) {
+      const p = q.payment.get(result.paymentId);
       await mailer.send({
-        to: b.email,
-        subject: `Booking confirmed: ${s.title}, ${formatClassTime(s.starts_at)}`,
-        text: `Hi ${b.name},\n\nYour spot is booked!\n\n${describe(s)}\n` +
-          (b.amount_minor ? `Paid: ${formatMoney(b.amount_minor, b.currency)}\n` : '') +
-          `\nView or cancel your booking: ${manageUrl(b)}` +
-          (config.cancellationHours > 0 ? `\n(Online cancellation is available until ${config.cancellationHours} hours before class.)` : '') +
-          sign,
+        to: user.email,
+        subject: 'Receipt received — we will confirm shortly',
+        text: `Hi ${user.name},\n\nThanks! We've received your receipt for ${money(p.amount_minor)} ` +
+          `(${result.byTransfer.length} class${result.byTransfer.length > 1 ? 'es' : ''}). ` +
+          `Your spot${result.byTransfer.length > 1 ? 's are' : ' is'} held while ${config.studio.instructor || 'the studio'} checks it, ` +
+          `and you'll get a confirmation email once it's approved.` + sign,
       });
       if (config.adminNotifyEmail) {
         await mailer.send({
           to: config.adminNotifyEmail,
-          subject: `New booking: ${s.title}, ${formatClassTime(s.starts_at)}`,
-          text: `${b.name} (${b.email}${b.phone ? ', ' + b.phone : ''}) booked ${s.title} on ${formatClassTime(s.starts_at)}.` +
-            (b.first_time === 'yes' ? '\nFirst time doing Pilates.' : '') +
-            (b.notes ? `\nNotes: ${b.notes}` : '') +
-            `\nSpots left: ${seatsLeft(s)} of ${s.capacity}.`,
+          subject: `Receipt to check: ${user.name}, ${money(p.amount_minor)}`,
+          text: `${user.name} uploaded a transfer receipt for ${money(p.amount_minor)}.\nReview it: ${config.baseUrl}/admin`,
         });
       }
     }
-    return result.booking;
+    return result;
   }
 
-  // Called from the Stripe webhook and from the return page.
-  async function completeCheckout(checkoutId) {
-    const b = q.bookingByCheckout.get(checkoutId);
-    if (!b) return null;
-    if (b.status === 'confirmed') return b;
-    const checkout = await payments.getCheckout(checkoutId);
-    if (!checkout.paid) return b;
-    return confirmBooking(b.id, checkout.paymentRef);
-  }
-
-  async function demoPay(token) {
-    if (payments.name !== 'demo') throw new BookingError('Not available.', 404);
-    const b = q.bookingByToken.get(token);
-    if (!b) throw new BookingError('Booking not found.', 404);
-    if (b.status !== 'pending' && b.status !== 'confirmed') {
-      throw new BookingError('This booking has expired. Please book again.', 409);
-    }
-    return confirmBooking(b.id, `demo_${b.id}`);
-  }
-
-  // Frees a booking's seat and, unless told otherwise, offers it to the waitlist.
-  function releaseBooking(b, status, { notify = true, refill = true } = {}) {
-    transaction(db, () => {
-      db.prepare(`UPDATE bookings SET status = ?, hold_expires_at = NULL, cancelled_at = ? WHERE id = ?`)
-        .run(status, now(), b.id);
-      if (b.waitlist_id) {
-        // A waitlist claim that was not paid goes back to "offered" if the offer is still valid.
-        const w = q.waitlistById.get(b.waitlist_id);
-        if (w && w.status === 'claiming') {
-          const stillValid = w.offer_expires_at > now() && b.status === 'pending';
-          db.prepare('UPDATE waitlist SET status = ? WHERE id = ?').run(stillValid ? 'offered' : 'expired', w.id);
+  async function approvePayment(paymentId) {
+    const changed = transaction(db, () => {
+      const p = q.payment.get(paymentId);
+      if (!p) throw new BookingError('Payment not found.', 404);
+      if (p.status !== 'pending_review') throw new BookingError('This receipt has already been reviewed.', 409);
+      db.prepare(`UPDATE payments SET status = 'approved', reviewed_at = ? WHERE id = ?`).run(now(), p.id);
+      const list = db.prepare('SELECT * FROM bookings WHERE payment_id = ?').all(p.id);
+      const confirmed = [];
+      const credited = [];
+      for (const b of list) {
+        if (b.status === 'payment_review') {
+          db.prepare(`UPDATE bookings SET status = 'confirmed', paid_with = 'transfer', confirmed_at = ? WHERE id = ?`).run(now(), b.id);
+          confirmed.push(b.id);
+        } else if (b.status === 'cancelled') {
+          // Cancelled while the receipt was waiting: the money is real, so it becomes credit.
+          addCredit(b.user_id, b.amount_minor, 'Payment for a cancelled class', b.id);
+          credited.push(b);
         }
       }
+      return { confirmed, credited, userId: p.user_id };
     });
-    if (refill) processWaitlist(b.session_id, { notify });
+    for (const id of changed.confirmed) await sendConfirmation(q.booking.get(id));
+    if (changed.credited.length) {
+      const u = q.user.get(changed.userId);
+      const total = changed.credited.reduce((sum, b) => sum + b.amount_minor, 0);
+      await mailer.send({
+        to: u.email,
+        subject: `${money(total)} added to your account credit`,
+        text: `Hi ${u.name},\n\nYour transfer was approved, but ${changed.credited.length > 1 ? 'some of those classes were' : 'that class was'} ` +
+          `cancelled, so ${money(total)} has been added to your account credit. You can use it for any other class: ${accountUrl('credits')}` + sign,
+      });
+    }
+    return changed;
   }
 
-  const awaitingTransfer = (b) => b.status === 'pending' && b.payment_provider === 'transfer' && b.hold_expires_at > now();
-
-  function canCustomerCancel(b, s) {
-    if (s.cancelled || s.starts_at <= nowLocal()) return false;
-    if (awaitingTransfer(b)) return true; // nothing paid yet, so always free to cancel
-    return b.status === 'confirmed' && s.starts_at > localIn(config.cancellationHours);
+  async function rejectPayment(paymentId, reason) {
+    const why = String(reason || '').trim().slice(0, 300) || 'the receipt could not be matched to a transfer';
+    const info = transaction(db, () => {
+      const p = q.payment.get(paymentId);
+      if (!p) throw new BookingError('Payment not found.', 404);
+      if (p.status !== 'pending_review') throw new BookingError('This receipt has already been reviewed.', 409);
+      db.prepare(`UPDATE payments SET status = 'rejected', reject_reason = ?, reviewed_at = ? WHERE id = ?`).run(why, now(), p.id);
+      const list = db.prepare(`SELECT * FROM bookings WHERE payment_id = ? AND status = 'payment_review'`).all(p.id);
+      for (const b of list) {
+        db.prepare(`UPDATE bookings SET status = 'awaiting_payment', payment_id = NULL WHERE id = ?`).run(b.id);
+      }
+      return { userId: p.user_id, list };
+    });
+    if (info.list.length) {
+      const u = q.user.get(info.userId);
+      const lines = info.list.map((b) => {
+        const s = getSession(b.session_id);
+        return `- ${s.title}, ${when(s)} (pay by ${deadlineText(hoursBefore(s, config.paymentDeadlineHours))})`;
+      });
+      await mailer.send({
+        to: u.email,
+        subject: 'There was a problem with your payment receipt',
+        text: `Hi ${u.name},\n\nYour receipt could not be accepted: ${why}.\n\nYour spot${lines.length > 1 ? 's are' : ' is'} still reserved:\n${lines.join('\n')}\n\n` +
+          `Please upload a correct receipt in "Pending payments" before the deadline: ${accountUrl('payments')}\n` +
+          `Unpaid spots are released ${config.paymentDeadlineHours} hours before class.` + sign,
+      });
+    }
+    return info;
   }
 
-  function bookingView(token) {
-    const b = q.bookingByToken.get(token);
-    if (!b) throw new BookingError('Booking not found.', 404);
+  // --------------------------------------------------------- cancellation
+
+  // Cancels a booking, turns money already paid into credit, and offers the spot on.
+  function releaseBooking(b, reason, { credit = true } = {}) {
+    let credited = 0;
+    transaction(db, () => {
+      db.prepare(`UPDATE bookings SET status = 'cancelled', cancel_reason = ?, cancelled_at = ? WHERE id = ?`).run(reason, now(), b.id);
+      if (credit && b.status === 'confirmed' && PAID_METHODS.includes(b.paid_with) && b.user_id) {
+        credited = b.amount_minor;
+        addCredit(b.user_id, credited, reason === 'class cancelled' ? 'Class cancelled by the studio' : 'Cancelled a class', b.id);
+      }
+    });
+    return credited;
+  }
+
+  async function sendCancellation(b, { credited, byStudio, why }) {
     const s = getSession(b.session_id);
-    return {
-      name: b.name,
-      email: b.email,
-      status: b.status === 'pending' && b.hold_expires_at <= now() ? 'expired' : b.status,
-      amount: formatMoney(b.amount_minor, b.currency),
-      paymentMethod: b.payment_provider,
-      transferInstructions: awaitingTransfer(b) ? config.studio.bankTransfer.instructions : null,
-      payBy: awaitingTransfer(b) ? formatDeadline(b.hold_expires_at) : null,
-      refunded: Boolean(b.refunded),
-      canCancel: canCustomerCancel(b, s),
-      cancellationHours: config.cancellationHours,
-      refundOnCancel: config.refundOnCancel,
-      session: publicSession(s),
+    const msgs = {
+      client: 'Your booking has been cancelled and your spot has been released.',
+      studio: `Your booking has been cancelled by the studio${why ? `: ${why}` : '.'}`,
+      unpaid: `We didn't receive payment ${config.paymentDeadlineHours} hours before class, so your reserved spot has been released.`,
     };
-  }
-
-  // Customer returning from payment: double-check with the gateway in case the webhook is late.
-  async function refreshBooking(token) {
-    const b = q.bookingByToken.get(token);
-    if (b && b.status === 'pending' && b.checkout_id && payments.name !== 'demo') {
-      try {
-        await completeCheckout(b.checkout_id);
-      } catch (err) {
-        console.error('Could not verify checkout:', err.message);
-      }
-    }
-    return bookingView(token);
-  }
-
-  async function refundIfPaid(b) {
-    if (!b.payment_ref || b.refunded || b.amount_minor === 0 || ['manual', 'transfer'].includes(b.payment_provider)) return false;
-    await payments.refund(b.payment_ref);
-    db.prepare('UPDATE bookings SET refunded = 1 WHERE id = ?').run(b.id);
-    return true;
-  }
-
-  async function cancelBooking(b, { refund, byStudio = false, reason = '' }) {
-    const s = getSession(b.session_id);
-    let refunded = false;
-    if (refund) {
-      try {
-        refunded = await refundIfPaid(b);
-      } catch (err) {
-        console.error(`Refund failed for booking ${b.id}:`, err.message);
-        throw new BookingError('The refund could not be processed, so the booking was not cancelled. Please contact the studio.', 502);
-      }
-    }
-    releaseBooking(b, 'cancelled');
     await mailer.send({
       to: b.email,
       subject: `Booking cancelled: ${s.title}, ${formatClassTime(s.starts_at)}`,
-      text: `Hi ${b.name},\n\n` +
-        (byStudio ? `Unfortunately your booking has been cancelled by the studio${reason ? `: ${reason}` : '.'}\n\n` : 'Your booking has been cancelled.\n\n') +
-        `${describe(s)}\n` +
-        (refunded ? `\nA refund of ${formatMoney(b.amount_minor, b.currency)} has been issued — it can take 5–10 days to appear on your statement.\n` : '') +
-        (refund && !refunded && b.status === 'confirmed' && b.payment_provider === 'transfer'
-          ? `\nAs you paid by transfer, ${config.studio.instructor || 'the studio'} will contact you about your refund.\n` : '') +
-        sign,
+      text: `Hi ${b.name},\n\n${msgs[byStudio]}\n\n${describe(s)}\n` +
+        (credited ? `\n${money(credited)} has been added to your account credit for another class: ${accountUrl('credits')}\n` : '') +
+        (b.status === 'payment_review' ? '\nIf your transfer receipt is approved, the amount will be added to your account credit.\n' : '') +
+        (byStudio === 'unpaid' ? `\nIf you already paid, please contact ${config.studio.instructor || 'the studio'}.\n` : '') + sign,
+      icalEvent: b.status === 'confirmed'
+        ? { method: 'CANCEL', filename: 'cancelled.ics', content: bookingIcs({ booking: b, session: s, config, cancelled: true }) }
+        : undefined,
     });
-    if (!byStudio && config.adminNotifyEmail) {
+  }
+
+  function canCancel(b, s) {
+    return isActive(b) && !s.cancelled && hoursBefore(s, config.cancellationHours) > now();
+  }
+
+  async function cancelByUser(user, bookingId) {
+    const b = q.booking.get(bookingId);
+    if (!b || b.user_id !== user.id) throw new BookingError('Booking not found.', 404);
+    const s = getSession(b.session_id);
+    if (!isActive(b)) throw new BookingError('This booking is already cancelled.', 409);
+    if (!canCancel(b, s)) {
+      throw new BookingError(`Online cancellation closes ${config.cancellationHours} hours before class. Please contact the studio.`, 409);
+    }
+    const credited = releaseBooking(b, 'cancelled by client');
+    await sendCancellation(b, { credited, byStudio: 'client' });
+    if (config.adminNotifyEmail) {
       await mailer.send({
         to: config.adminNotifyEmail,
         subject: `Cancellation: ${b.name}, ${s.title} ${formatClassTime(s.starts_at)}`,
-        text: `${b.name} (${b.phone}, ${b.email}) cancelled their booking.` +
-          (refunded ? ' They were refunded automatically.' : '') +
-          (refund && b.status === 'confirmed' && b.payment_provider === 'transfer' ? ' They paid by transfer — please refund them manually.' : ''),
+        text: `${b.name} (${b.phone}, ${b.email}) cancelled.` + (credited ? ` ${money(credited)} was added to her credit.` : ''),
       });
     }
-    return refunded;
+    processWaitlist(s.id);
+    return { credited };
   }
 
-  async function cancelByCustomer(token) {
-    const b = q.bookingByToken.get(token);
-    if (!b) throw new BookingError('Booking not found.', 404);
-    const s = getSession(b.session_id);
-    if (!canCustomerCancel(b, s)) {
-      throw new BookingError(
-        `Online cancellation closes ${config.cancellationHours} hours before class. Please contact the studio.`, 409);
-    }
-    await cancelBooking(b, { refund: config.refundOnCancel && b.status === 'confirmed' });
-    return bookingView(token);
-  }
+  // ---------------------------------------------------------------- waitlist
 
-  // --------------------------------------------------------------- waitlist
-
-  function joinWaitlist(sessionId, input) {
-    const customer = cleanCustomer(input);
+  function joinWaitlist(user, sessionId) {
     const entry = transaction(db, () => {
       const s = getSession(sessionId);
-      if (!isBookable(s)) throw new BookingError('This class is no longer open for booking.', 409);
-      if (seatsLeft(s) > 0) throw new BookingError('Good news — a spot is available, you can book it now!', 409, { available: true });
-      const dup = db.prepare(`SELECT 1 FROM waitlist WHERE session_id = ? AND email = ? AND status IN ('waiting', 'offered', 'claiming')`)
-        .get(s.id, customer.email);
-      if (dup) throw new BookingError('You are already on the waiting list for this class.', 409);
-      const booked = db.prepare(`SELECT 1 FROM bookings WHERE session_id = ? AND email = ? AND status = 'confirmed'`)
-        .get(s.id, customer.email);
-      if (booked) throw new BookingError('You already have a booking for this class.', 409);
-      const r = db.prepare(`INSERT INTO waitlist (session_id, name, email, phone, first_time, notes, status, token, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?, ?)`)
-        .run(s.id, customer.name, customer.email, customer.phone, customer.firstTime, customer.notes, newToken(), now());
-      return q.waitlistById.get(r.lastInsertRowid);
+      if (!waitlistOpen(s)) throw new BookingError('This class is no longer taking waiting-list sign-ups.', 409);
+      if (seatsLeft(s) > 0 && bookingOpen(s)) throw new BookingError('Good news — a spot is available, you can book it now!', 409, { available: true });
+      if (db.prepare(`SELECT 1 FROM bookings WHERE session_id = ? AND user_id = ? AND status != 'cancelled'`).get(s.id, user.id)) {
+        throw new BookingError('You are already booked into this class.', 409);
+      }
+      if (db.prepare(`SELECT 1 FROM waitlist WHERE session_id = ? AND user_id = ? AND status IN ('waiting', 'offered')`).get(s.id, user.id)) {
+        throw new BookingError('You are already on the waiting list for this class.', 409);
+      }
+      const r = db.prepare(`INSERT INTO waitlist (session_id, user_id, status, created_at) VALUES (?, ?, 'waiting', ?)`).run(s.id, user.id, now());
+      return q.waitlistEntry.get(r.lastInsertRowid);
     });
     const s = getSession(sessionId);
     const position = waitlistPosition(entry);
     mailer.send({
-      to: entry.email,
+      to: user.email,
       subject: `You're on the waiting list: ${s.title}, ${formatClassTime(s.starts_at)}`,
-      text: `Hi ${entry.name},\n\nYou're number ${position} on the waiting list for:\n\n${describe(s)}\n\n` +
-        `If a spot opens up we'll email you a link to claim it. You'll have ${config.waitlistOfferHours} hours to pay and confirm before it goes to the next person.\n\n` +
-        `No longer interested? Leave the waiting list here: ${claimUrl(entry)}` + sign,
+      text: `Hi ${user.name},\n\nYou're number ${position} on the waiting list for:\n\n${describe(s)}\n\n` +
+        `If a spot opens up we'll email you, and you'll have up to ${config.waitlistOfferHours} hours to claim it in your account: ${accountUrl('waitlist')}` + sign,
     });
-    return { position, token: entry.token };
+    return { id: entry.id, position };
   }
 
   function waitlistPosition(w) {
-    return db.prepare(`SELECT COUNT(*) AS n FROM waitlist WHERE session_id = ? AND status IN ('waiting', 'offered', 'claiming') AND id <= ?`)
+    return db.prepare(`SELECT COUNT(*) AS n FROM waitlist WHERE session_id = ? AND status IN ('waiting', 'offered') AND id <= ?`)
       .get(w.session_id, w.id).n;
   }
 
-  // Offers free seats to the people at the front of the waiting list.
-  function processWaitlist(sessionId, { notify = true } = {}) {
+  // Offers free spots to the people at the front of the waiting list.
+  function processWaitlist(sessionId) {
     const offers = transaction(db, () => {
       const s = getSession(sessionId);
-      if (!isBookable(s)) return [];
+      if (!waitlistOpen(s)) return [];
       const made = [];
       let left = seatsLeft(s);
       while (left > 0) {
         const w = q.nextWaiting.get(s.id);
         if (!w) break;
-        const expires = now() + config.waitlistOfferHours * 3600_000;
+        const expires = Math.min(now() + config.waitlistOfferHours * HOUR, hoursBefore(s, config.paymentDeadlineHours));
         db.prepare(`UPDATE waitlist SET status = 'offered', offer_expires_at = ? WHERE id = ?`).run(expires, w.id);
-        made.push(q.waitlistById.get(w.id));
+        made.push({ w: q.waitlistEntry.get(w.id), s });
         left--;
       }
-      return made.map((w) => ({ w, s }));
+      return made;
     });
-    if (notify) {
-      for (const { w, s } of offers) {
-        mailer.send({
-          to: w.email,
-          subject: `A spot opened up: ${s.title}, ${formatClassTime(s.starts_at)}`,
-          text: `Hi ${w.name},\n\nGood news — a spot has opened up and it's being held for you:\n\n${describe(s)}\n\n` +
-            `Claim it here within ${config.waitlistOfferHours} hours: ${claimUrl(w)}\n\n` +
-            `If you don't claim it in time, it will be offered to the next person on the list.` + sign,
-        });
-      }
+    for (const { w, s } of offers) {
+      const u = q.user.get(w.user_id);
+      mailer.send({
+        to: u.email,
+        subject: `A spot opened up: ${s.title}, ${formatClassTime(s.starts_at)}`,
+        text: `Hi ${u.name},\n\nGood news — a spot has opened up and it's being held for you:\n\n${describe(s)}\n\n` +
+          `Claim it by ${deadlineText(w.offer_expires_at)} in your account: ${accountUrl('waitlist')}\n\n` +
+          `If you don't claim it in time, it goes to the next person on the list.` + sign,
+      });
     }
     return offers.length;
   }
 
-  function waitlistView(token) {
-    const w = q.waitlistByToken.get(token);
-    if (!w) throw new BookingError('Waiting list entry not found.', 404);
-    const s = getSession(w.session_id);
-    let status = w.status === 'claiming' ? 'offered' : w.status;
-    if (status === 'offered' && (w.offer_expires_at <= now() || !isBookable(s))) status = 'expired';
+  function claimOffer(user, waitlistId) {
+    return transaction(db, () => {
+      const w = q.waitlistEntry.get(waitlistId);
+      if (!w || w.user_id !== user.id) throw new BookingError('Waiting list entry not found.', 404);
+      if (w.status !== 'offered' || w.offer_expires_at <= now()) throw new BookingError('Sorry, this offer is no longer available.', 409);
+      const s = getSession(w.session_id);
+      // The offered seat passes straight to the new booking, so no capacity check is needed.
+      db.prepare(`UPDATE waitlist SET status = 'booked' WHERE id = ?`).run(w.id);
+      const r = db.prepare(`
+        INSERT INTO bookings (session_id, user_id, name, email, phone, status, amount_minor, currency, waitlist_id, created_at)
+        VALUES (?, ?, ?, ?, ?, 'awaiting_payment', ?, ?, ?, ?)`)
+        .run(s.id, user.id, user.name, user.email, user.phone, s.price_minor, s.currency, w.id, now());
+      return { bookingId: Number(r.lastInsertRowid) };
+    });
+  }
+
+  function leaveWaitlist(user, waitlistId) {
+    const w = q.waitlistEntry.get(waitlistId);
+    if (!w || w.user_id !== user.id) throw new BookingError('Waiting list entry not found.', 404);
+    if (!['waiting', 'offered'].includes(w.status)) throw new BookingError('You are not on this waiting list any more.', 409);
+    db.prepare(`UPDATE waitlist SET status = 'removed' WHERE id = ?`).run(w.id);
+    if (w.status === 'offered') processWaitlist(w.session_id);
+  }
+
+  // ----------------------------------------------------------------- account
+
+  function myAccount(user) {
+    const u = q.user.get(user.id);
+    const bookings = db.prepare(`
+      SELECT b.*, s.title, s.starts_at, s.duration_min, s.location, s.cancelled AS session_cancelled
+      FROM bookings b JOIN class_sessions s ON s.id = b.session_id
+      WHERE b.user_id = ? ORDER BY s.starts_at`).all(u.id);
+    const current = nowLocal();
+    const view = (b) => {
+      const s = getSession(b.session_id);
+      return {
+        id: b.id,
+        title: b.title,
+        startsAt: b.starts_at,
+        durationMinutes: b.duration_min,
+        location: b.location,
+        status: b.status,
+        amount: money(b.amount_minor),
+        amountMinor: b.amount_minor,
+        paidWith: b.paid_with,
+        cancelReason: b.cancel_reason,
+        canCancel: canCancel(b, s),
+        payBy: b.status === 'awaiting_payment' ? deadlineText(payDeadline(b)) : null,
+        past: b.starts_at <= current,
+      };
+    };
+    const waitlist = db.prepare(`
+      SELECT w.*, s.title, s.starts_at, s.duration_min FROM waitlist w JOIN class_sessions s ON s.id = w.session_id
+      WHERE w.user_id = ? AND w.status IN ('waiting', 'offered') AND s.starts_at > ? ORDER BY s.starts_at`).all(u.id, current);
+    const ledger = db.prepare('SELECT amount_minor, reason, created_at FROM credit_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(u.id);
+    const rejected = db.prepare(`SELECT reject_reason, reviewed_at FROM payments WHERE user_id = ? AND status = 'rejected' ORDER BY id DESC LIMIT 1`).get(u.id);
     return {
-      name: w.name,
-      email: w.email,
-      status,
-      position: ['waiting', 'offered', 'claiming'].includes(status) ? waitlistPosition(w) : null,
-      offerExpiresAt: status === 'offered' ? w.offer_expires_at : null,
-      session: publicSession(s),
+      user: { email: u.email, name: u.name, phone: u.phone, injuries: u.injuries, activityLevel: u.activity_level },
+      credit: money(u.credit_minor),
+      creditMinor: u.credit_minor,
+      upcoming: bookings.filter((b) => b.starts_at > current && b.status !== 'cancelled').map(view),
+      history: bookings.filter((b) => b.starts_at <= current || b.status === 'cancelled').reverse().slice(0, 30).map(view),
+      waitlist: waitlist.map((w) => ({
+        id: w.id,
+        title: w.title,
+        startsAt: w.starts_at,
+        durationMinutes: w.duration_min,
+        status: w.offer_expires_at && w.offer_expires_at <= now() ? 'expired' : w.status,
+        position: waitlistPosition(w),
+        offerExpires: w.status === 'offered' ? deadlineText(w.offer_expires_at) : null,
+      })),
+      ledger: ledger.map((l) => ({ amount: money(l.amount_minor), positive: l.amount_minor > 0, reason: l.reason, at: l.created_at })),
+      lastRejection: rejected ? rejected.reject_reason : null,
+      paymentInstructions: config.studio.paymentInstructions,
     };
   }
 
-  async function claimOffer(token, { paymentMethod } = {}) {
-    const w = q.waitlistByToken.get(token);
-    if (!w) throw new BookingError('Waiting list entry not found.', 404);
-    if (w.status === 'claiming') {
-      // They abandoned an earlier checkout — release it and start a fresh one.
-      const pending = db.prepare(`SELECT * FROM bookings WHERE waitlist_id = ? AND status = 'pending'`).get(w.id);
-      if (pending) releaseBooking(pending, 'expired', { refill: false });
-    }
-    const fresh = q.waitlistById.get(w.id);
-    if (fresh.status !== 'offered' || fresh.offer_expires_at <= now()) {
-      throw new BookingError('Sorry, this offer is no longer available.', 409);
-    }
-    const customer = { name: fresh.name, email: fresh.email, phone: fresh.phone, firstTime: fresh.first_time, notes: fresh.notes, paymentMethod };
-    return startBooking(fresh.session_id, customer, { waitlistEntry: fresh, strict: false });
+  function bookingCalendar(user, bookingId) {
+    const b = q.booking.get(bookingId);
+    if (!b || b.user_id !== user.id || b.status !== 'confirmed') throw new BookingError('Booking not found.', 404);
+    return bookingIcs({ booking: b, session: getSession(b.session_id), config });
   }
 
-  function leaveWaitlist(token) {
-    const w = q.waitlistByToken.get(token);
-    if (!w) throw new BookingError('Waiting list entry not found.', 404);
-    if (!['waiting', 'offered'].includes(w.status)) throw new BookingError('You are not on the waiting list any more.', 409);
-    db.prepare(`UPDATE waitlist SET status = 'removed' WHERE id = ?`).run(w.id);
-    if (w.status === 'offered') processWaitlist(w.session_id);
-    return waitlistView(token);
-  }
+  // ----------------------------------------------------------- maintenance
 
-  // ------------------------------------------------------------ maintenance
-
-  // Expires unpaid holds and unclaimed offers, passing seats down the waiting list.
+  // Releases unpaid spots, sends payment reminders and passes on lapsed waitlist offers.
   async function sweep() {
-    const stale = db.prepare(`SELECT * FROM bookings WHERE status = 'pending' AND hold_expires_at <= ?`).all(now());
-    for (const b of stale) {
-      if (b.checkout_id && payments.name !== 'demo') {
-        try {
-          const checkout = await payments.getCheckout(b.checkout_id);
-          if (checkout.paid) {
-            await confirmBooking(b.id, checkout.paymentRef);
-            continue;
-          }
-          await payments.expireCheckout(b.checkout_id);
-        } catch (err) {
-          console.error(`Could not check payment for booking ${b.id}:`, err.message);
-          continue; // try again next sweep rather than risk dropping a paid booking
-        }
-      }
-      const current = q.booking.get(b.id);
-      if (current.status !== 'pending') continue;
-      releaseBooking(current, 'expired');
-      if (current.payment_provider === 'transfer') {
-        const s = getSession(current.session_id);
-        mailer.send({
-          to: current.email,
-          subject: `Reservation expired: ${s.title}, ${formatClassTime(s.starts_at)}`,
-          text: `Hi ${current.name},\n\nWe didn't receive your payment in time, so your reserved spot in ${s.title} on ` +
-            `${formatClassTime(s.starts_at, s.duration_min)} has been released.\n\n` +
-            `If you already paid, please reply to this email or contact ${config.studio.instructor || 'the studio'} and we'll sort it out.` + sign,
+    const pending = db.prepare(`
+      SELECT b.* FROM bookings b JOIN class_sessions s ON s.id = b.session_id
+      WHERE b.status = 'awaiting_payment' AND s.starts_at > ?`).all(localString(now() - 24 * HOUR, tz));
+    for (const b of pending) {
+      const s = getSession(b.session_id);
+      if (hoursBefore(s, config.paymentDeadlineHours) <= now()) {
+        releaseBooking(b, 'unpaid');
+        await sendCancellation(b, { byStudio: 'unpaid' });
+        processWaitlist(s.id);
+      } else if (!b.reminder_sent && hoursBefore(s, config.paymentReminderHours) <= now()) {
+        db.prepare('UPDATE bookings SET reminder_sent = 1 WHERE id = ?').run(b.id);
+        await mailer.send({
+          to: b.email,
+          subject: `Reminder: payment needed for ${s.title}, ${formatClassTime(s.starts_at)}`,
+          text: `Hi ${b.name},\n\nYour spot in ${s.title} on ${when(s)} is reserved but not paid yet.\n\n` +
+            `Please upload your transfer receipt by ${deadlineText(payDeadline(b))}, or the spot will be released: ${accountUrl('payments')}\n\n` +
+            `${config.studio.paymentInstructions}` + sign,
         });
       }
     }
@@ -544,10 +578,11 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
     for (const w of lapsed) {
       db.prepare(`UPDATE waitlist SET status = 'expired' WHERE id = ?`).run(w.id);
       const s = getSession(w.session_id);
+      const u = q.user.get(w.user_id);
       mailer.send({
-        to: w.email,
+        to: u.email,
         subject: `Waiting list offer expired: ${s.title}`,
-        text: `Hi ${w.name},\n\nThe spot we held for you in ${s.title} on ${formatClassTime(s.starts_at)} has been passed on to the next person on the waiting list.` + sign,
+        text: `Hi ${u.name},\n\nThe spot we held for you in ${s.title} on ${when(s)} has been passed on to the next person on the waiting list.` + sign,
       });
       processWaitlist(w.session_id);
     }
@@ -557,64 +592,90 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
 
   function adminSessions({ includePast = false } = {}) {
     const rows = includePast
-      ? db.prepare(`SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at DESC LIMIT 100`).all(localIn(-24 * 60))
-      : db.prepare(`SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at`).all(localIn(-3));
+      ? db.prepare('SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at DESC LIMIT 100').all(localString(now() - 60 * 86400_000, tz))
+      : db.prepare('SELECT * FROM class_sessions WHERE starts_at > ? ORDER BY starts_at').all(localString(now() - 3 * HOUR, tz));
     return rows.map((s) => ({
       ...publicSession(s),
-      booked: db.prepare(`SELECT COUNT(*) AS n FROM bookings WHERE session_id = ? AND status = 'confirmed'`).get(s.id).n,
+      booked: db.prepare(`SELECT COUNT(*) AS n FROM bookings WHERE session_id = ? AND status IN ('awaiting_payment', 'payment_review', 'confirmed')`).get(s.id).n,
+      paid: db.prepare(`SELECT COUNT(*) AS n FROM bookings WHERE session_id = ? AND status = 'confirmed'`).get(s.id).n,
       past: s.starts_at <= nowLocal(),
     }));
   }
 
   function adminSessionDetail(id) {
     const s = getSession(id);
-    const bookings = db.prepare(`SELECT id, name, email, phone, first_time, notes, status, amount_minor, currency, payment_provider,
-                                        refunded, created_at, hold_expires_at FROM bookings
-                                 WHERE session_id = ? AND status IN ('confirmed', 'pending', 'cancelled', 'expired') ORDER BY id`).all(s.id)
-      // Expired card checkouts are noise; expired transfers stay visible in case the money arrives late.
-      .filter((b) => (b.status === 'pending' ? b.hold_expires_at > now() : b.status !== 'expired' || b.payment_provider === 'transfer'))
-      .map((b) => ({ ...b, amount: formatMoney(b.amount_minor, b.currency), refunded: Boolean(b.refunded) }));
-    const waitlist = db.prepare(`SELECT id, name, email, phone, first_time, notes, status, offer_expires_at, created_at FROM waitlist
-                                 WHERE session_id = ? ORDER BY id`).all(s.id);
-    return { session: { ...publicSession(s), past: s.starts_at <= nowLocal() }, bookings, waitlist };
+    const bookings = db.prepare(`
+      SELECT b.id, b.name, b.email, b.phone, b.status, b.amount_minor, b.paid_with, b.payment_id, b.cancel_reason, b.created_at,
+             u.injuries, u.activity_level
+      FROM bookings b LEFT JOIN users u ON u.id = b.user_id
+      WHERE b.session_id = ? ORDER BY b.id`).all(s.id)
+      .map((b) => ({ ...b, amount: money(b.amount_minor) }));
+    const waitlist = db.prepare(`
+      SELECT w.id, w.status, w.offer_expires_at, w.created_at, u.name, u.email, u.phone, u.injuries, u.activity_level
+      FROM waitlist w JOIN users u ON u.id = w.user_id WHERE w.session_id = ? ORDER BY w.id`).all(s.id);
+    return {
+      session: { ...publicSession(s), past: s.starts_at <= nowLocal(), payDeadline: deadlineText(hoursBefore(s, config.paymentDeadlineHours)) },
+      bookings,
+      waitlist,
+    };
   }
 
-  async function adminCancelBooking(bookingId, { refund }) {
+  function adminPayments(status = 'pending_review') {
+    return db.prepare(`
+      SELECT p.*, u.name, u.email, u.phone FROM payments p JOIN users u ON u.id = p.user_id
+      WHERE p.status = ? ORDER BY p.id ${status === 'pending_review' ? 'ASC' : 'DESC'} LIMIT 100`).all(status)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        email: p.email,
+        phone: p.phone,
+        amount: money(p.amount_minor),
+        status: p.status,
+        rejectReason: p.reject_reason,
+        receiptName: p.receipt_name,
+        receiptType: p.receipt_type,
+        createdAt: p.created_at,
+        bookings: db.prepare(`
+          SELECT b.id, b.status, b.amount_minor, s.title, s.starts_at, s.duration_min
+          FROM bookings b JOIN class_sessions s ON s.id = b.session_id WHERE b.payment_id = ? ORDER BY s.starts_at`).all(p.id)
+          .map((b) => ({ ...b, amount: money(b.amount_minor) })),
+      }));
+  }
+
+  function receiptFor(paymentId, user) {
+    const p = q.payment.get(paymentId);
+    if (!p || (user && p.user_id !== user.id)) throw new BookingError('Receipt not found.', 404);
+    return p;
+  }
+
+  async function adminCancelBooking(bookingId, { credit = true, reason = '' } = {}) {
     const b = q.booking.get(bookingId);
     if (!b) throw new BookingError('Booking not found.', 404);
-    if (b.status !== 'confirmed' && b.status !== 'pending') throw new BookingError('Booking is not active.', 409);
-    if (b.status === 'pending' && b.checkout_id) await payments.expireCheckout(b.checkout_id);
-    return cancelBooking(b, { refund, byStudio: true });
+    if (!isActive(b)) throw new BookingError('Booking is not active.', 409);
+    const credited = releaseBooking(b, 'cancelled by studio', { credit });
+    await sendCancellation(b, { credited, byStudio: 'studio', why: String(reason || '').slice(0, 300) });
+    processWaitlist(b.session_id);
+    return { credited };
   }
 
-  // A bank transfer / STC Pay arrived: confirm the reserved spot.
-  async function adminMarkPaid(bookingId) {
-    const b = q.booking.get(bookingId);
-    if (!b) throw new BookingError('Booking not found.', 404);
-    if (b.status === 'confirmed') return b;
-    if (b.payment_provider !== 'transfer') throw new BookingError('Only bank-transfer bookings can be marked as paid.', 409);
-    if (b.status !== 'pending') {
-      // The hold lapsed but the money arrived: reinstate the booking if there is still room.
-      if (seatsLeft(getSession(b.session_id)) === 0) {
-        throw new BookingError('The reservation expired and the class is now full. Add her manually to over-book, or refund the transfer.', 409);
-      }
-    }
-    return confirmBooking(b.id, null);
-  }
-
-  async function adminAddBooking(sessionId, input) {
-    const customer = cleanCustomer(input, { strict: false });
-    const s = getSession(sessionId);
+  async function adminAddBooking(sessionId, input = {}) {
+    const name = String(input.name || '').trim().slice(0, 100);
+    const email = String(input.email || '').trim().toLowerCase().slice(0, 200);
+    const phone = String(input.phone || '').trim().slice(0, 40);
+    if (!name) throw new BookingError('Please enter a name.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BookingError('Please enter a valid email address.');
     const b = transaction(db, () => {
+      const s = getSession(sessionId);
       if (seatsLeft(s) === 0 && !input.overbook) throw new BookingError('Class is full.', 409, { full: true });
+      const account = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
       const r = db.prepare(`
-        INSERT INTO bookings (session_id, name, email, phone, first_time, notes, status, token, amount_minor, currency,
-                              payment_provider, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, 'manual', ?)`)
-        .run(s.id, customer.name, customer.email, customer.phone, customer.firstTime, customer.notes, newToken(), s.currency, now());
+        INSERT INTO bookings (session_id, user_id, name, email, phone, status, amount_minor, currency, paid_with, created_at, confirmed_at)
+        VALUES (?, ?, ?, ?, ?, 'confirmed', ?, ?, 'manual', ?, ?)`)
+        .run(s.id, account?.id ?? null, name, email, phone, s.price_minor, s.currency, now(), now());
       return q.booking.get(r.lastInsertRowid);
     });
-    return confirmBooking(b.id, null);
+    await sendConfirmation(b);
+    return b;
   }
 
   function adminSetCapacity(sessionId, capacity) {
@@ -625,67 +686,153 @@ function createBookingService({ db, config, payments, mailer, now = () => Date.n
     processWaitlist(sessionId);
   }
 
-  async function adminCancelSession(sessionId, { reason = '' } = {}) {
+  // Cancels a whole class: paid clients get credit, everyone is emailed.
+  async function adminCancelClass(sessionId, { reason = '' } = {}) {
     const s = getSession(sessionId);
+    const why = String(reason || '').slice(0, 300) || 'the class has been cancelled';
     db.prepare('UPDATE class_sessions SET cancelled = 1 WHERE id = ?').run(s.id);
-    const active = db.prepare(`SELECT * FROM bookings WHERE session_id = ? AND status IN ('confirmed', 'pending')`).all(s.id);
-    const failed = [];
+    const active = db.prepare(`SELECT * FROM bookings WHERE session_id = ? AND status IN ('awaiting_payment', 'payment_review', 'confirmed')`).all(s.id);
+    let creditedTotal = 0;
     for (const b of active) {
-      try {
-        if (b.status === 'pending' && b.checkout_id) await payments.expireCheckout(b.checkout_id);
-        await cancelBooking(b, { refund: true, byStudio: true, reason: reason || 'the class has been cancelled' });
-      } catch (err) {
-        failed.push(`${b.name} <${b.email}>`);
-      }
+      const credited = releaseBooking(b, 'class cancelled');
+      creditedTotal += credited;
+      await sendCancellation(b, { credited, byStudio: 'studio', why });
     }
-    const waiting = db.prepare(`SELECT * FROM waitlist WHERE session_id = ? AND status IN ('waiting', 'offered')`).all(s.id);
+    const waiting = db.prepare(`
+      SELECT w.*, u.name, u.email FROM waitlist w JOIN users u ON u.id = w.user_id
+      WHERE w.session_id = ? AND w.status IN ('waiting', 'offered')`).all(s.id);
     for (const w of waiting) {
       db.prepare(`UPDATE waitlist SET status = 'removed' WHERE id = ?`).run(w.id);
       mailer.send({
         to: w.email,
         subject: `Class cancelled: ${s.title}, ${formatClassTime(s.starts_at)}`,
-        text: `Hi ${w.name},\n\nThe class you were waiting for has been cancelled${reason ? `: ${reason}` : '.'}\n\n${describe(s)}` + sign,
+        text: `Hi ${w.name},\n\nThe class you were waiting for has been cancelled: ${why}.\n\n${describe(s)}` + sign,
       });
     }
-    return { cancelledBookings: active.length - failed.length, failedRefunds: failed };
+    return { cancelledBookings: active.length, credited: money(creditedTotal) };
   }
 
   function adminRemoveWaitlist(id) {
-    const w = q.waitlistById.get(id);
+    const w = q.waitlistEntry.get(id);
     if (!w) throw new BookingError('Not found.', 404);
     db.prepare(`UPDATE waitlist SET status = 'removed' WHERE id = ?`).run(w.id);
     if (w.status === 'offered') processWaitlist(w.session_id);
   }
 
+  // ------------------------------------------------------- class schedules
+
+  function cleanClass(input = {}, { oneOff = false } = {}) {
+    const title = String(input.title || '').trim().slice(0, 80);
+    const description = String(input.description || '').trim().slice(0, 300);
+    const time = String(input.time || '');
+    const durationMin = Number(input.durationMinutes);
+    const capacity = Number(input.capacity);
+    const price = Number(input.price);
+    if (!title) throw new BookingError('Please enter a class name.');
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new BookingError('Please enter a start time.');
+    if (!(durationMin >= 15 && durationMin <= 240)) throw new BookingError('Duration must be between 15 and 240 minutes.');
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 500) throw new BookingError('Capacity must be a whole number.');
+    if (!(price >= 0)) throw new BookingError('Please enter a price.');
+    const out = { title, description, time, durationMin, capacity, priceMinor: toMinor(price, currency) };
+    if (oneOff) {
+      const date = String(input.date || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new BookingError('Please choose a date.');
+      if (`${date}T${time}` <= nowLocal()) throw new BookingError('That date and time is in the past.');
+      out.date = date;
+    } else {
+      const weekday = Number(input.weekday);
+      if (!(weekday >= 0 && weekday <= 6)) throw new BookingError('Please choose a day of the week.');
+      out.weekday = weekday;
+    }
+    return out;
+  }
+
+  function listTemplates() {
+    return db.prepare('SELECT * FROM class_templates ORDER BY active DESC, weekday, time').all().map((t) => ({
+      id: t.id,
+      title: t.title,
+      description: t.description,
+      weekday: t.weekday,
+      time: t.time,
+      durationMinutes: t.duration_min,
+      capacity: t.capacity,
+      price: t.price_minor / minorUnitFactor(currency),
+      active: Boolean(t.active),
+    }));
+  }
+
+  function addTemplate(input) {
+    const c = cleanClass(input);
+    db.prepare(`INSERT INTO class_templates (title, description, weekday, time, duration_min, capacity, price_minor, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(c.title, c.description, c.weekday, c.time, c.durationMin, c.capacity, c.priceMinor, now());
+    syncSessions();
+  }
+
+  // Future dates of a weekly class that nobody has booked or waitlisted are rebuilt from the new
+  // details; dates that already have bookings keep their original time so nobody is moved silently.
+  function editTemplate(id, input) {
+    const t = db.prepare('SELECT * FROM class_templates WHERE id = ?').get(id);
+    if (!t) throw new BookingError('Class not found.', 404);
+    const active = input.active === undefined ? Boolean(t.active) : Boolean(input.active);
+    const c = cleanClass(input);
+    let kept = 0;
+    transaction(db, () => {
+      db.prepare(`UPDATE class_templates SET title = ?, description = ?, weekday = ?, time = ?, duration_min = ?, capacity = ?,
+                  price_minor = ?, active = ? WHERE id = ?`)
+        .run(c.title, c.description, c.weekday, c.time, c.durationMin, c.capacity, c.priceMinor, active ? 1 : 0, id);
+      const future = db.prepare('SELECT * FROM class_sessions WHERE template_id = ? AND starts_at > ? AND cancelled = 0').all(id, nowLocal());
+      for (const s of future) {
+        const used = db.prepare('SELECT (SELECT COUNT(*) FROM bookings WHERE session_id = ?) + (SELECT COUNT(*) FROM waitlist WHERE session_id = ?) AS n')
+          .get(s.id, s.id).n;
+        if (used) {
+          kept++;
+          db.prepare('UPDATE class_sessions SET title = ?, description = ? WHERE id = ?').run(c.title, c.description, s.id);
+        } else {
+          db.prepare('DELETE FROM class_sessions WHERE id = ?').run(s.id);
+        }
+      }
+    });
+    syncSessions();
+    return { keptWithBookings: kept };
+  }
+
+  function addOneOffClass(input) {
+    const c = cleanClass(input, { oneOff: true });
+    db.prepare(`INSERT INTO class_sessions (template_id, title, description, location, starts_at, duration_min, capacity, price_minor, currency, created_at)
+                VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(c.title, c.description, config.studio.location, `${c.date}T${c.time}`, c.durationMin, c.capacity, c.priceMinor, currency, now());
+  }
+
   return {
+    seedTemplates,
     syncSessions,
     listUpcoming,
-    startBooking,
-    confirmBooking,
-    completeCheckout,
-    demoPay,
-    refreshBooking,
-    bookingView,
-    cancelByCustomer,
+    bookClasses,
+    payBookings,
+    approvePayment,
+    rejectPayment,
+    cancelByUser,
     joinWaitlist,
-    waitlistView,
     claimOffer,
     leaveWaitlist,
     processWaitlist,
+    myAccount,
+    bookingCalendar,
     sweep,
     adminSessions,
     adminSessionDetail,
+    adminPayments,
+    receiptFor,
     adminCancelBooking,
     adminAddBooking,
-    adminMarkPaid,
     adminSetCapacity,
-    adminCancelSession,
+    adminCancelClass,
     adminRemoveWaitlist,
-    // Expire a checkout that Stripe told us has lapsed.
-    async checkoutExpired(checkoutId) {
-      const b = q.bookingByCheckout.get(checkoutId);
-      if (b && b.status === 'pending') releaseBooking(b, 'expired');
-    },
+    listTemplates,
+    addTemplate,
+    editTemplate,
+    addOneOffClass,
   };
 }
 

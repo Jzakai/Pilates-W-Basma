@@ -73,7 +73,7 @@ section { padding: 48px 0; }
 .section-head p { color: var(--muted); margin: 0; font-size: 0.92rem; }
 
 .about { background: var(--surface); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.about .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 24px; margin-top: 24px; }
+.about .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px; margin-top: 24px; }
 .about .grid div { padding: 20px; border-radius: var(--radius); background: var(--bg); }
 .about .grid strong { display: block; font-family: var(--serif); font-size: 1.25rem; margin-bottom: 4px; }
 .about .grid span { color: var(--muted); font-size: 0.95rem; }
@@ -166,3 +166,40 @@ footer { padding: 32px 0 48px; color: var(--muted); font-size: 0.88rem; text-ali
 footer a { color: var(--muted); }
 
 .demo-banner { background: #fff6d6; color: #6b5a12; text-align: center; font-size: 0.85rem; padding: 8px 16px; }
+
+/* --------------------------------------------------------- accounts & selection */
+.nav a.nav-strong { color: var(--accent-dark); font-weight: 600; }
+.class-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow); }
+.select-bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -6px 20px rgba(47, 42, 38, 0.08); z-index: 20; }
+.select-bar .wrap { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 68px; flex-wrap: wrap; padding-top: 10px; padding-bottom: 10px; }
+.select-bar #select-summary { font-weight: 600; }
+.select-actions { display: flex; gap: 8px; }
+body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
+
+.auth { max-width: 460px; margin: 48px auto; }
+.auth .panel { margin: 0; }
+.auth .switch { text-align: center; margin-top: 16px; font-size: 0.92rem; color: var(--muted); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 520px) { .row2 { grid-template-columns: 1fr; } }
+
+/* account page */
+.account { padding: 32px 16px 64px; max-width: 820px; margin: 0 auto; }
+.account-nav { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 24px; }
+.account-nav a { border: 1px solid var(--line); background: var(--surface); color: var(--muted); border-radius: 999px; padding: 7px 14px; font-size: 0.9rem; text-decoration: none; }
+.account-nav a:hover { color: var(--ink); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 18px; box-shadow: var(--shadow); }
+.card h2 { font-size: 1.6rem; margin-bottom: 4px; }
+.card .lead { color: var(--muted); margin-bottom: 14px; font-size: 0.95rem; }
+.item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.item:first-of-type { border-top: none; }
+.item .what strong { display: block; }
+.item .what span { color: var(--muted); font-size: 0.88rem; }
+.item .acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.item label.check { display: flex; align-items: center; gap: 12px; margin: 0; font-weight: 400; cursor: pointer; flex: 1; }
+.item label.check input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.pay-total { display: flex; justify-content: space-between; font-weight: 600; padding: 12px 0; border-top: 2px solid var(--line); margin-top: 4px; }
+.credit-big { font-family: var(--serif); font-size: 2.2rem; font-weight: 600; }
+.ledger { font-size: 0.9rem; }
+.ledger div { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--line); }
+.plus { color: var(--accent-dark); font-weight: 600; }
+.minus { color: var(--muted); }

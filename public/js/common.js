@@ -1,10 +1,13 @@
 // Small helpers shared by every page.
 
+// JSON by default; pass a FormData as body for file uploads.
 async function api(path, options = {}) {
+  const isForm = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const res = await fetch(path, {
     method: options.body ? 'POST' : options.method || 'GET',
-    headers: options.body ? { 'Content-Type': 'application/json' } : {},
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    headers: options.body && !isForm ? { 'Content-Type': 'application/json' } : {},
+    body: options.body ? (isForm ? options.body : JSON.stringify(options.body)) : undefined,
+    credentials: 'same-origin',
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -13,6 +16,31 @@ async function api(path, options = {}) {
     throw err;
   }
   return data;
+}
+
+// The signed-in client (or null), fetched once per page.
+let mePromise;
+function loadMe() {
+  mePromise ||= api('/api/auth/me').then((r) => r.user).catch(() => null);
+  return mePromise;
+}
+
+// Adds "Sign in" or "My account" to the header.
+async function renderAccountNav() {
+  const nav = document.querySelector('.site-header .nav');
+  if (!nav || nav.querySelector('[data-account]') || document.body.hasAttribute('data-no-account')) return;
+  const user = await loadMe();
+  nav.append(user
+    ? el('a', { href: '/account.html', 'data-account': true, class: 'nav-strong' }, 'My account')
+    : el('a', { href: `/login.html?next=${encodeURIComponent(location.pathname + location.hash)}`, 'data-account': true, class: 'nav-strong' }, 'Sign in'));
+}
+
+function goToSignIn() {
+  location.href = `/login.html?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
+}
+
+function money(minor) {
+  return `SAR ${(minor / 100).toFixed(minor % 100 ? 2 : 0)}`;
 }
 
 // el('div', { class: 'x', onclick: fn }, 'text', childNode) — text is always escaped.
@@ -72,13 +100,10 @@ function param(name) {
 }
 
 let studioPromise;
+renderAccountNav();
 function loadStudio() {
   studioPromise ||= api('/api/studio').then((studio) => {
     document.querySelectorAll('[data-studio-name]').forEach((n) => (n.textContent = studio.name));
-    if (studio.demoPayments && !document.querySelector('.demo-banner')) {
-      document.body.prepend(el('div', { class: 'demo-banner' },
-        'Demo mode — online payments are simulated until the payment gateway is connected.'));
-    }
     const footer = document.querySelector('footer .contact');
     if (footer) {
       const bits = [];

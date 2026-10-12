@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>My account</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" data-studio-name>Pilates w Basma</a>
+      <nav class="nav"><a href="/#schedule">Timetable</a></nav>
+    </div>
+  </header>
+  <main class="account">
+    <div class="section-head">
+      <h1 style="font-size:2.4rem;margin:0" id="hello">My account</h1>
+      <button class="btn secondary small" type="button" id="signout">Sign out</button>
+    </div>
+    <nav class="account-nav">
+      <a href="#payments">Pending payments</a>
+      <a href="#bookings">My bookings</a>
+      <a href="#waitlist">Waiting list</a>
+      <a href="#credits">Credits</a>
+      <a href="#profile">Profile</a>
+    </nav>
+    <div id="result"></div>
+
+    <section class="card" id="payments">
+      <h2>Pending payments</h2>
+      <p class="lead" id="pay-lead"></p>
+      <div id="pay-body"></div>
+    </section>
+
+    <section class="card" id="bookings">
+      <h2>My bookings</h2>
+      <p class="lead" id="bookings-lead"></p>
+      <div id="bookings-body"></div>
+    </section>
+
+    <section class="card" id="waitlist">
+      <h2>Waiting list</h2>
+      <div id="waitlist-body"></div>
+    </section>
+
+    <section class="card" id="credits">
+      <h2>Credits</h2>
+      <p class="lead">Credit is added when you cancel a paid class in time or a class is cancelled by the studio. Use it to pay for any class.</p>
+      <div id="credits-body"></div>
+    </section>
+
+    <section class="card" id="profile">
+      <h2>Profile</h2>
+      <form id="profile-form" novalidate>
+        <div id="profile-notice"></div>
+        <div class="row2">
+          <label>Full name <input name="name" required maxlength="100"></label>
+          <label>Phone / WhatsApp <input name="phone" type="tel" required maxlength="40"></label>
+        </div>
+        <label>Email <input name="email" disabled></label>
+        <label>Activity level <select name="activityLevel" required></select></label>
+        <label>Injuries or limitations <span class="opt">(only the instructor sees this)</span><textarea name="injuries" maxlength="1000"></textarea></label>
+        <button class="btn" type="submit">Save changes</button>
+      </form>
+    </section>
+
+    <section class="card" id="history">
+      <h2>Past &amp; cancelled</h2>
+      <div id="history-body"></div>
+    </section>
+  </main>
+  <footer><div class="wrap"><div class="contact"></div></div></footer>
+  <script src="/js/common.js"></script>
+  <script src="/js/account.js"></script>
+</body>
+</html>

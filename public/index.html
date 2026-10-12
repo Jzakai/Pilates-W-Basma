@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pilates w Basma — Book a class</title>
-  <meta name="description" content="Pilates classes at KAUST with Basma (female only). See the timetable, reserve your spot and pay online.">
+  <meta name="description" content="Pilates classes at KAUST with Basma (female only). See the timetable, book your spot and pay by bank transfer.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -35,9 +35,10 @@
         <h2>About the classes</h2>
         <p id="about-text"></p>
         <div class="grid">
-          <div><strong>Book online</strong><span id="pay-blurb">Pick a class, reserve your mat and pay securely with mada, card or Apple Pay.</span></div>
-          <div><strong>Class full?</strong><span>Join the waiting list — if a spot opens up you'll get an email with a link to claim it.</span></div>
-          <div><strong>Plans change</strong><span id="cancel-policy">Cancel online from your confirmation email.</span></div>
+          <div><strong>Book online</strong><span>Create an account, pick one or several classes and book them in one go.</span></div>
+          <div><strong>Pay by transfer</strong><span id="pay-blurb">Pay by bank transfer or STC Pay and upload your receipt — now or later from your account.</span></div>
+          <div><strong>Class full?</strong><span>Join the waiting list — if a spot opens up you'll get an email to claim it.</span></div>
+          <div><strong>Plans change</strong><span id="cancel-policy">Cancel online from your account and get the class fee back as credit.</span></div>
         </div>
       </div>
     </section>
@@ -61,38 +62,15 @@
     </div>
   </footer>
 
-  <dialog id="book-dialog">
-    <form class="modal-body" id="book-form" method="dialog" novalidate>
-      <button type="button" class="modal-close" aria-label="Close" data-close>&times;</button>
-      <h3 id="dialog-title">Book your spot</h3>
-      <div class="modal-class" id="dialog-class"></div>
-      <div id="dialog-notice"></div>
-      <label>Full name
-        <input name="name" autocomplete="name" required maxlength="100">
-      </label>
-      <label>Email
-        <input name="email" type="email" autocomplete="email" required maxlength="200">
-      </label>
-      <label>Phone / WhatsApp number
-        <input name="phone" type="tel" autocomplete="tel" required maxlength="40" placeholder="+966 5X XXX XXXX">
-      </label>
-      <fieldset class="choice">
-        <legend>First time doing Pilates?</legend>
-        <label><input type="radio" name="firstTime" value="yes" required> Yes</label>
-        <label><input type="radio" name="firstTime" value="no"> No</label>
-      </fieldset>
-      <label>Any injuries, limitations, comments you'd like to note? <span class="opt">(optional)</span>
-        <textarea name="notes" maxlength="500"></textarea>
-      </label>
-      <fieldset class="choice" id="pay-field" hidden>
-        <legend>How would you like to pay?</legend>
-        <label><input type="radio" name="paymentMethod" value="online" checked> Pay now online <span class="opt">(mada, card, Apple Pay, STC Pay)</span></label>
-        <label><input type="radio" name="paymentMethod" value="transfer"> Bank transfer / STC Pay transfer</label>
-      </fieldset>
-      <button class="btn block" type="submit" id="dialog-submit">Continue to payment</button>
-      <p class="fine" id="dialog-fine" style="margin-top:12px"></p>
-    </form>
-  </dialog>
+  <div class="select-bar" id="select-bar" hidden>
+    <div class="wrap">
+      <span id="select-summary"></span>
+      <span class="select-actions">
+        <button class="btn secondary small" type="button" id="select-clear">Clear</button>
+        <button class="btn" type="button" id="select-book">Book</button>
+      </span>
+    </div>
+  </div>
 
   <script src="/js/common.js"></script>
   <script src="/js/home.js"></script>

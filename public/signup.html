@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Create account</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" data-studio-name>Pilates w Basma</a>
+      <nav class="nav"><a href="/#schedule">Timetable</a></nav>
+    </div>
+  </header>
+  <main class="wrap auth">
+    <form class="panel" id="signup-form" novalidate>
+      <h2>Create your account</h2>
+      <p class="fine" id="signup-notice-text">Your details are saved so you don't have to enter them every time you book.</p>
+      <div id="notice"></div>
+      <label>Full name <input name="name" autocomplete="name" required maxlength="100"></label>
+      <label>Email <input name="email" type="email" autocomplete="email" required maxlength="200"></label>
+      <label>Phone / WhatsApp number <input name="phone" type="tel" autocomplete="tel" required maxlength="40" placeholder="+966 5X XXX XXXX"></label>
+      <label>Activity level <select name="activityLevel" id="activity" required></select></label>
+      <label>Any injuries or limitations? <span class="opt">(optional — only the instructor sees this)</span>
+        <textarea name="injuries" maxlength="1000"></textarea>
+      </label>
+      <label>Password <span class="opt">(at least 8 characters)</span> <input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+      <button class="btn block" type="submit">Create account</button>
+      <p class="switch">Already have an account? <a href="/login.html" id="signin-link">Sign in</a></p>
+    </form>
+  </main>
+  <footer><div class="wrap"><div class="contact"></div></div></footer>
+  <script src="/js/common.js"></script>
+  <script src="/js/auth.js"></script>
+</body>
+</html>

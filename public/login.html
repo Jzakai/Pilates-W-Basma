@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Sign in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" data-studio-name>Pilates w Basma</a>
+      <nav class="nav"><a href="/#schedule">Timetable</a></nav>
+    </div>
+  </header>
+  <main class="wrap auth">
+    <form class="panel" id="signin-form" novalidate>
+      <h2>Sign in</h2>
+      <p class="fine">Sign in to book classes, upload payment receipts and manage your bookings.</p>
+      <div id="notice"></div>
+      <label>Email <input name="email" type="email" autocomplete="email" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn block" type="submit">Sign in</button>
+      <p class="switch"><a href="#" id="show-forgot">Forgot your password?</a></p>
+      <p class="switch">New here? <a href="/signup.html" id="signup-link">Create an account</a></p>
+    </form>
+    <form class="panel" id="forgot-form" hidden novalidate>
+      <h2>Reset your password</h2>
+      <p class="fine">Enter your email and we'll send you a link to choose a new password.</p>
+      <div id="forgot-notice"></div>
+      <label>Email <input name="email" type="email" autocomplete="email" required></label>
+      <button class="btn block" type="submit">Send reset link</button>
+      <p class="switch"><a href="#" id="show-signin">Back to sign in</a></p>
+    </form>
+  </main>
+  <footer><div class="wrap"><div class="contact"></div></div></footer>
+  <script src="/js/common.js"></script>
+  <script src="/js/auth.js"></script>
+</body>
+</html>

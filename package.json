@@ -1,7 +1,7 @@
 {
   "name": "pilates-w-basma",
   "version": "1.0.0",
-  "description": "Class booking website for Pilates w Basma — schedule, online payment and waiting list.",
+  "description": "Class booking website for Pilates w Basma — accounts, bank-transfer receipts, credits and waiting list.",
   "main": "src/server.js",
   "private": true,
   "engines": {
@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "express": "^5.2.1",
-    "nodemailer": "^10.0.13",
-    "stripe": "^23.0.0"
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.13"
   }
 }

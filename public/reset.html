@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>Payment (demo)</title>
+  <title>Reset password</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -17,11 +17,16 @@
       <nav class="nav"><a href="/#schedule">Timetable</a></nav>
     </div>
   </header>
-  <main class="wrap">
-    <div class="panel" id="panel"><p>Loading…</p></div>
+  <main class="wrap auth">
+    <form class="panel" id="reset-form" novalidate>
+      <h2>Choose a new password</h2>
+      <div id="notice"></div>
+      <label>New password <span class="opt">(at least 8 characters)</span> <input name="password" type="password" autocomplete="new-password" required minlength="8"></label>
+      <button class="btn block" type="submit">Save password</button>
+    </form>
   </main>
   <footer><div class="wrap"><div class="contact"></div></div></footer>
   <script src="/js/common.js"></script>
-  <script src="/js/demo-pay.js"></script>
+  <script src="/js/auth.js"></script>
 </body>
 </html>
