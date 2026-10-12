@@ -32,7 +32,7 @@ async function main() {
     console.log(`Database: ${db.dialect === 'pg' ? 'Postgres (DATABASE_URL)' : `SQLite file ${config.databasePath}`}`);
     console.log(`Receipts: ${storage.kind === 'supabase' ? `Supabase Storage bucket "${config.supabaseBucket}"` : `local folder ${config.uploadDir}`}`);
     if (!config.adminPassword) console.log('Dashboard disabled: set ADMIN_PASSWORD to enable /admin');
-    if (!config.smtp.host) console.log('Email: SMTP not configured, emails will be printed here');
+    console.log(`Email: ${{ brevo: `Brevo, from ${config.emailFrom}`, smtp: `SMTP ${config.smtp.host}`, console: 'not configured, emails will be printed here' }[mailer.kind]}`);
   });
 }
 

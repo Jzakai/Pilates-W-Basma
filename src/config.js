@@ -89,6 +89,8 @@ const config = {
     user: env.SMTP_USER || '',
     pass: env.SMTP_PASS || '',
   },
+  // Brevo API key: sends email over HTTPS (use this on Render's free plan, which blocks SMTP).
+  brevoApiKey: env.BREVO_API_KEY || '',
   emailFrom: env.EMAIL_FROM || 'bookings@example.com',
   adminNotifyEmail: env.ADMIN_NOTIFY_EMAIL || '',
 

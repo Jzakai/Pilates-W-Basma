@@ -53,7 +53,20 @@ The weekly classes are copied into the database the first time the site starts. 
 
 ## Sending emails
 
-Fill in the `SMTP_*` settings. Most email providers work: Gmail with an app password, Zoho, Brevo, Mailgun and so on. Email is needed in production for confirmations, payment reminders and password resets. Set `ADMIN_NOTIFY_EMAIL` to be told about new bookings and receipts to check.
+Clients get an email when they book, when a receipt is received, approved or rejected, payment reminders, cancellations, waitlist offers and password resets. Booking confirmations include a **calendar invite** (`.ics`) that adds the class to Google Calendar, Apple Calendar or Outlook, and confirmed bookings also have an "Add to calendar" link in My account.
+
+**On Render's free plan, use Brevo.** Render's free plan blocks the ports normal email (SMTP) uses, so the site can send through [Brevo](https://www.brevo.com)'s web API instead (free tier: 300 emails a day at the time of writing):
+
+1. Sign up at brevo.com.
+2. Go to **Senders, Domains & Dedicated IPs → Senders** and add the address emails should come from (for example the studio's Gmail). Brevo emails it a confirmation link.
+3. Go to **SMTP & API → API Keys** and create a key.
+4. On Render, add `BREVO_API_KEY` (the key) and `EMAIL_FROM` (for example `Pilates w Basma <basma@gmail.com>`, using the verified address), then save and redeploy.
+
+The start-up log shows `Email: Brevo, from …` when it's on. Send yourself a test (sign up, or use "Forgot password") and check the spam folder the first time. Emails from a free address like Gmail sent through another service are more likely to land in spam. A domain of your own, verified in Brevo, fixes that.
+
+**On a paid host,** you can use SMTP instead (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`), for example Gmail with an app password.
+
+Set `ADMIN_NOTIFY_EMAIL` to be told about new bookings and receipts to check. With no email set up, emails are printed in the server log.
 
 ## Database and receipts: Supabase
 

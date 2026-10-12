@@ -117,3 +117,23 @@ test('website: sign up, book, upload a receipt, instructor opens it and approves
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('Brevo email: sends text and the calendar invite as an attachment', async () => {
+  const { createMailer, parseAddress } = require('../src/mailer');
+  assert.deepEqual(parseAddress('Pilates w Basma <basma@example.com>'), { name: 'Pilates w Basma', email: 'basma@example.com' });
+  const calls = [];
+  const fetchImpl = async (url, opts) => {
+    calls.push({ url, opts });
+    return { ok: true, text: async () => '' };
+  };
+  const mailer = createMailer({ brevoApiKey: 'key-1', emailFrom: 'Pilates w Basma <basma@example.com>', smtp: {} }, { fetchImpl });
+  assert.equal(mailer.kind, 'brevo');
+  await mailer.send({ to: 'sara@example.com', subject: 'Booking confirmed', text: 'See you', icalEvent: { method: 'PUBLISH', filename: 'pilates-class.ics', content: 'BEGIN:VCALENDAR' } });
+  assert.equal(calls[0].url, 'https://api.brevo.com/v3/smtp/email');
+  assert.equal(calls[0].opts.headers['api-key'], 'key-1');
+  const body = JSON.parse(calls[0].opts.body);
+  assert.deepEqual(body.sender, { name: 'Pilates w Basma', email: 'basma@example.com' });
+  assert.deepEqual(body.to, [{ email: 'sara@example.com' }]);
+  assert.equal(Buffer.from(body.attachment[0].content, 'base64').toString(), 'BEGIN:VCALENDAR');
+  assert.equal(body.attachment[0].name, 'pilates-class.ics');
+});
