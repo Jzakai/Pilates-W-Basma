@@ -36,7 +36,8 @@ test('Supabase Storage adapter: creates the bucket, uploads, downloads and delet
   });
   const url = await listen(server);
   try {
-    const storage = supabaseStorage({ url, serviceKey: 'service-key', bucket: 'receipts' });
+    // A URL copied with the REST path on the end still reaches Storage.
+    const storage = supabaseStorage({ url: `${url}/rest/v1/`, serviceKey: 'service-key', bucket: 'receipts' });
     await storage.init();
     await storage.save('abc.png', Buffer.from('png-bytes'), 'image/png');
     assert.equal(objects.get('abc.png').type, 'image/png');

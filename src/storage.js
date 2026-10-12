@@ -31,7 +31,8 @@ function localStorage(dir) {
 }
 
 function supabaseStorage({ url, serviceKey, bucket, fetchImpl = fetch }) {
-  const base = `${url.replace(/\/$/, '')}/storage/v1`;
+  // Only the project address matters, so a pasted ".../rest/v1/" or trailing slash is ignored.
+  const base = `${new URL(url.trim()).origin}/storage/v1`;
   const headers = (extra = {}) => ({ Authorization: `Bearer ${serviceKey}`, apikey: serviceKey, ...extra });
   const objectUrl = (key) => `${base}/object/${encodeURIComponent(bucket)}/${encodeURIComponent(path.basename(key))}`;
 
