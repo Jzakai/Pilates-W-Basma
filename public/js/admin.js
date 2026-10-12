@@ -10,6 +10,7 @@ function showTab(name) {
   document.querySelectorAll('[data-panel]').forEach((p) => (p.hidden = p.dataset.panel !== name));
   if (name === 'receipts') loadReceipts();
   if (name === 'schedule') loadTemplates();
+  if (name === 'clients') loadClients();
   if (name === 'classes') loadList();
 }
 document.querySelectorAll('#admin-tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
@@ -243,6 +244,77 @@ function reject(p) {
   act(() => api(`/api/admin/payments/${p.id}/reject`, { body: { reason } }), loadReceipts);
 }
 
+// -------------------------------------------------------------- clients
+
+let clientSearchTimer;
+document.getElementById('client-search').addEventListener('input', () => {
+  clearTimeout(clientSearchTimer);
+  clientSearchTimer = setTimeout(loadClients, 250);
+});
+
+const joined = (ms) => new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+const whatsapp = (phone) => `https://wa.me/${phone.replace(/[^\d]/g, '').replace(/^0/, '966')}`;
+const stop = (e) => e.stopPropagation();
+
+async function loadClients() {
+  const box = document.getElementById('clients');
+  const q = document.getElementById('client-search').value;
+  let list;
+  try {
+    list = await api(`/api/admin/clients?q=${encodeURIComponent(q)}`);
+  } catch (err) {
+    return box.replaceChildren(el('p', { class: 'fine' }, err.message));
+  }
+  if (!q) document.getElementById('client-count').textContent = list.length ? `(${list.length})` : '';
+  if (!list.length) return box.replaceChildren(el('p', { class: 'fine' }, q ? 'No clients match your search.' : 'No one has signed up yet.'));
+  const rows = list.flatMap((c) => {
+    const detail = el('tr', { class: 'client-detail', hidden: true }, el('td', { colspan: 6 }));
+    const row = el('tr', { class: 'client-row', title: 'Show bookings and credit history', onclick: () => toggleClient(c, detail) },
+      el('td', {}, el('strong', {}, c.name), el('div', { class: 'sub' }, `joined ${joined(c.created_at)}`)),
+      el('td', {}, el('a', { href: `mailto:${c.email}`, onclick: stop }, c.email),
+        el('div', { class: 'sub' }, el('a', { href: whatsapp(c.phone), target: '_blank', rel: 'noopener', onclick: stop }, c.phone))),
+      el('td', {}, c.activity_level, c.injuries ? el('div', { class: 'sub' }, `🩹 ${c.injuries}`) : null),
+      el('td', {}, `${c.upcoming} upcoming`, el('div', { class: 'sub' }, `${c.paid_classes} paid in total`),
+        c.unpaid ? el('div', {}, el('span', { class: 'badge low' }, `${c.unpaid} unpaid`)) : null),
+      el('td', {}, c.credit),
+      el('td', { class: 'sub' }, '▾'),
+    );
+    return [row, detail];
+  });
+  box.replaceChildren(el('table', {},
+    el('thead', {}, el('tr', {}, ['Client', 'Contact', 'Activity & injuries', 'Bookings', 'Credit', ''].map((t) => el('th', {}, t)))),
+    el('tbody', {}, rows)));
+}
+
+async function toggleClient(c, detail) {
+  detail.hidden = !detail.hidden;
+  if (detail.hidden || detail.dataset.loaded) return;
+  const cell = detail.firstChild;
+  cell.textContent = 'Loading…';
+  try {
+    const d = await api(`/api/admin/clients/${c.id}`);
+    detail.dataset.loaded = '1';
+    cell.replaceChildren(
+      el('strong', {}, 'Bookings'),
+      d.bookings.length
+        ? el('table', {}, el('tbody', {}, d.bookings.map((b) => el('tr', {},
+          el('td', {}, `${b.title}, ${classWhen(b)}`),
+          el('td', {}, b.amount, el('div', { class: 'sub' }, PAID_BY[b.paid_with] ?? '')),
+          el('td', {}, statusBadge(b.status), b.cancel_reason ? el('div', { class: 'sub' }, b.cancel_reason) : null)))))
+        : el('p', { class: 'fine' }, 'No bookings yet.'),
+      el('strong', { style: 'display:block;margin-top:12px' }, 'Credit history'),
+      d.ledger.length
+        ? el('table', {}, el('tbody', {}, d.ledger.map((l) => el('tr', {},
+          el('td', {}, new Date(l.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })),
+          el('td', {}, l.reason),
+          el('td', {}, `${l.positive ? '+' : '−'}${l.amount.replace('-', '')}`)))))
+        : el('p', { class: 'fine' }, 'No credit history.'),
+    );
+  } catch (err) {
+    cell.textContent = err.message;
+  }
+}
+
 // ------------------------------------------------------------- schedule
 
 function classFields(form, { oneOff = false, values = {} } = {}) {
@@ -329,3 +401,4 @@ function editTemplate(t) {
 resetTemplateForm();
 loadList();
 updateReceiptCount();
+api('/api/admin/clients').then((list) => { document.getElementById('client-count').textContent = list.length ? `(${list.length})` : ''; }).catch(() => {});

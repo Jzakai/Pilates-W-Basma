@@ -73,6 +73,7 @@ function createAccountService({ db, config, mailer, now = () => Date.now() }) {
                           VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(email, profile.name, profile.phone, profile.injuries, profile.activityLevel, hashPassword(input.password), now());
     const user = byId.get(r.lastInsertRowid);
+    console.log(`New account: ${user.name} <${user.email}> (#${user.id})`);
     return { user: publicUser(user), token: startSession(user.id) };
   }
 

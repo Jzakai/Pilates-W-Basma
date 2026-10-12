@@ -243,6 +243,8 @@ function createApp({ config, service, accounts }) {
   admin.get('/payments/:id/receipt', (req, res) => sendReceipt(res, service.receiptFor(Number(req.params.id))));
   admin.post('/payments/:id/approve', h(async (req, res) => res.json(await service.approvePayment(Number(req.params.id)))));
   admin.post('/payments/:id/reject', h(async (req, res) => res.json(await service.rejectPayment(Number(req.params.id), req.body.reason))));
+  admin.get('/clients', (req, res) => res.json(service.adminClients(req.query.q || '')));
+  admin.get('/clients/:id', (req, res) => res.json(service.adminClientDetail(Number(req.params.id))));
   admin.get('/templates', (req, res) => res.json(service.listTemplates()));
   admin.post('/templates', (req, res) => {
     service.addTemplate(req.body);

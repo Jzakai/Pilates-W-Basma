@@ -222,3 +222,18 @@ test('converts studio local time to an instant', () => {
   const { localToEpoch } = require('../src/time');
   assert.equal(localToEpoch('2026-10-04T19:15', 'Asia/Riyadh'), Date.UTC(2026, 9, 4, 16, 15));
 });
+
+test('instructor sees the list of clients with their bookings and credit', async () => {
+  const { service, signUp, sessionId } = setup();
+  const a = signUp();
+  const b = signUp();
+  await bookAndPay(service, a, sessionId);
+  const all = service.adminClients();
+  assert.equal(all.length, 2);
+  const row = all.find((c) => c.id === a.id);
+  assert.equal(row.upcoming, 1);
+  assert.equal(row.paid_classes, 1);
+  assert.equal(row.activity_level, 'Very active');
+  assert.deepEqual(service.adminClients(b.email).map((c) => c.id), [b.id]);
+  assert.equal(service.adminClientDetail(a.id).bookings[0].status, 'confirmed');
+});

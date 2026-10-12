@@ -37,6 +37,9 @@
     .receipt { display: grid; grid-template-columns: 220px 1fr; gap: 20px; }
     .receipt img { width: 100%; border-radius: 10px; border: 1px solid var(--line); }
     @media (max-width: 700px) { .receipt { grid-template-columns: 1fr; } }
+    .client-row { cursor: pointer; }
+    .client-row:hover td { background: var(--bg); }
+    .client-detail td { background: var(--bg); padding: 12px 16px 16px; }
     .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
   </style>
 </head>
@@ -51,6 +54,7 @@
     <div class="week-tabs" role="tablist" id="admin-tabs">
       <button role="tab" data-tab="classes" aria-selected="true">Classes</button>
       <button role="tab" data-tab="receipts" aria-selected="false">Receipts <span id="receipt-count"></span></button>
+      <button role="tab" data-tab="clients" aria-selected="false">Clients <span id="client-count"></span></button>
       <button role="tab" data-tab="schedule" aria-selected="false">Class schedule</button>
     </div>
 
@@ -75,6 +79,14 @@
         </select>
       </div>
       <div id="receipts"></div>
+    </section>
+
+    <section data-panel="clients" hidden>
+      <div class="toolbar">
+        <h2 style="margin:0">Clients</h2>
+        <input type="search" id="client-search" placeholder="Search name, email or phone" style="width:min(320px,100%);margin:0">
+      </div>
+      <div class="card"><div class="table-wrap" id="clients"></div></div>
     </section>
 
     <section data-panel="schedule" hidden>

@@ -719,6 +719,35 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     if (w.status === 'offered') processWaitlist(w.session_id);
   }
 
+  // ---------------------------------------------------------------- clients
+
+  function adminClients(search = '') {
+    const term = `%${String(search).trim().toLowerCase().slice(0, 100)}%`;
+    return db.prepare(`
+      SELECT u.id, u.email, u.name, u.phone, u.injuries, u.activity_level, u.credit_minor, u.created_at,
+        (SELECT COUNT(*) FROM bookings b WHERE b.user_id = u.id AND b.status = 'confirmed') AS paid_classes,
+        (SELECT COUNT(*) FROM bookings b JOIN class_sessions s ON s.id = b.session_id
+           WHERE b.user_id = u.id AND b.status IN ('awaiting_payment', 'payment_review', 'confirmed') AND s.starts_at > :now) AS upcoming,
+        (SELECT COUNT(*) FROM bookings b WHERE b.user_id = u.id AND b.status = 'awaiting_payment') AS unpaid
+      FROM users u
+      WHERE lower(u.name) LIKE :term OR lower(u.email) LIKE :term OR u.phone LIKE :term
+      ORDER BY u.created_at DESC LIMIT 500`).all({ term, now: nowLocal() })
+      .map((u) => ({ ...u, credit: money(u.credit_minor) }));
+  }
+
+  function adminClientDetail(id) {
+    const u = q.user.get(id);
+    if (!u) throw new BookingError('Client not found.', 404);
+    const bookings = db.prepare(`
+      SELECT b.id, b.status, b.paid_with, b.amount_minor, b.cancel_reason, s.title, s.starts_at, s.duration_min
+      FROM bookings b JOIN class_sessions s ON s.id = b.session_id
+      WHERE b.user_id = ? ORDER BY s.starts_at DESC LIMIT 100`).all(u.id)
+      .map((b) => ({ ...b, amount: money(b.amount_minor), past: b.starts_at <= nowLocal() }));
+    const ledger = db.prepare('SELECT amount_minor, reason, created_at FROM credit_ledger WHERE user_id = ? ORDER BY id DESC LIMIT 50').all(u.id)
+      .map((l) => ({ amount: money(l.amount_minor), positive: l.amount_minor > 0, reason: l.reason, at: l.created_at }));
+    return { bookings, ledger };
+  }
+
   // ------------------------------------------------------- class schedules
 
   function cleanClass(input = {}, { oneOff = false } = {}) {
@@ -829,6 +858,8 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
     adminSetCapacity,
     adminCancelClass,
     adminRemoveWaitlist,
+    adminClients,
+    adminClientDetail,
     listTemplates,
     addTemplate,
     editTemplate,
