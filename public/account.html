@@ -22,39 +22,40 @@
       <h1 style="font-size:2.4rem;margin:0" id="hello">My account</h1>
       <button class="btn secondary small" type="button" id="signout">Sign out</button>
     </div>
-    <nav class="account-nav">
-      <a href="#payments">Pending payments</a>
-      <a href="#bookings">My bookings</a>
-      <a href="#waitlist">Waiting list</a>
-      <a href="#credits">Credits</a>
-      <a href="#profile">Profile</a>
+    <nav class="account-nav" role="tablist">
+      <a href="#payments" role="tab" data-tab="payments">Pending payments <span class="count" id="count-payments"></span></a>
+      <a href="#bookings" role="tab" data-tab="bookings">My bookings <span class="count" id="count-bookings"></span></a>
+      <a href="#waitlist" role="tab" data-tab="waitlist">Waiting list <span class="count" id="count-waitlist"></span></a>
+      <a href="#credits" role="tab" data-tab="credits">Credits</a>
+      <a href="#history" role="tab" data-tab="history">Past &amp; cancelled</a>
+      <a href="#profile" role="tab" data-tab="profile">Profile</a>
     </nav>
     <div id="result"></div>
 
-    <section class="card" id="payments">
+    <section class="card" id="payments" data-section hidden>
       <h2>Pending payments</h2>
       <p class="lead" id="pay-lead"></p>
       <div id="pay-body"></div>
     </section>
 
-    <section class="card" id="bookings">
+    <section class="card" id="bookings" data-section hidden>
       <h2>My bookings</h2>
       <p class="lead" id="bookings-lead"></p>
       <div id="bookings-body"></div>
     </section>
 
-    <section class="card" id="waitlist">
+    <section class="card" id="waitlist" data-section hidden>
       <h2>Waiting list</h2>
       <div id="waitlist-body"></div>
     </section>
 
-    <section class="card" id="credits">
+    <section class="card" id="credits" data-section hidden>
       <h2>Credits</h2>
       <p class="lead">Credit is added when you cancel a paid class in time or a class is cancelled by the studio. Use it to pay for any class.</p>
       <div id="credits-body"></div>
     </section>
 
-    <section class="card" id="profile">
+    <section class="card" id="profile" data-section hidden>
       <h2>Profile</h2>
       <form id="profile-form" novalidate>
         <div id="profile-notice"></div>
@@ -69,7 +70,7 @@
       </form>
     </section>
 
-    <section class="card" id="history">
+    <section class="card" id="history" data-section hidden>
       <h2>Past &amp; cancelled</h2>
       <div id="history-body"></div>
     </section>

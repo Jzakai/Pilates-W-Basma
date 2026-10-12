@@ -22,6 +22,10 @@ async function load() {
     return notice('result', err.message, 'error');
   }
   document.getElementById('hello').textContent = `Hi, ${account.user.name.split(' ')[0]}`;
+  const due = account.upcoming.filter((b) => b.status === 'awaiting_payment').length;
+  document.getElementById('count-payments').textContent = due || '';
+  document.getElementById('count-bookings').textContent = account.upcoming.length || '';
+  document.getElementById('count-waitlist').textContent = account.waitlist.filter((w) => w.status === 'offered').length || '';
   renderPayments();
   renderBookings();
   renderWaitlist();
@@ -118,7 +122,7 @@ async function pay(e) {
     if (r.byTransfer.length) parts.push(`Receipt uploaded — ${studio.instructor || 'the studio'} will check it and you'll get a confirmation email.`);
     notice('result', parts.join(' '));
     await load();
-    document.getElementById('result').scrollIntoView({ behavior: 'smooth' });
+    showSection(account.upcoming.some((b) => b.status === 'awaiting_payment') ? 'payments' : 'bookings');
   } catch (err) {
     notice('pay-notice', err.message, 'error');
     btn.disabled = false;
@@ -172,7 +176,7 @@ async function claim(w) {
     await api(`/api/waitlist/${w.id}/claim`, { body: {} });
     notice('result', `The spot is yours! Please pay for it below to confirm.`);
     await load();
-    document.getElementById('payments').scrollIntoView({ behavior: 'smooth' });
+    showSection('payments');
   } catch (err) {
     alert(err.message);
     load();
@@ -244,4 +248,30 @@ if (booked) {
   notice('result', lines.join(' '), booked.booked.length ? 'info' : 'error');
 }
 
-load();
+// ---------------------------------------------------- one page per menu item
+
+const SECTIONS = ['payments', 'bookings', 'waitlist', 'credits', 'history', 'profile'];
+
+function showSection(name, { push = true } = {}) {
+  if (!SECTIONS.includes(name)) name = 'payments';
+  for (const sec of document.querySelectorAll('[data-section]')) sec.hidden = sec.id !== name;
+  for (const a of document.querySelectorAll('.account-nav a')) a.setAttribute('aria-selected', String(a.dataset.tab === name));
+  if (push && location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`);
+  window.scrollTo({ top: 0 });
+}
+
+document.querySelectorAll('.account-nav a').forEach((a) => a.addEventListener('click', (e) => {
+  e.preventDefault();
+  showSection(a.dataset.tab);
+}));
+// Links inside the page (e.g. "Book a class") and from emails use #section.
+window.addEventListener('hashchange', () => showSection(location.hash.slice(1), { push: false }));
+
+load().then(() => {
+  const wanted = location.hash.slice(1);
+  if (SECTIONS.includes(wanted)) return showSection(wanted, { push: false });
+  // No section asked for: open whatever needs attention first.
+  const due = account?.upcoming.some((b) => b.status === 'awaiting_payment');
+  const offered = account?.waitlist.some((w) => w.status === 'offered');
+  showSection(due ? 'payments' : offered ? 'waitlist' : 'bookings');
+});

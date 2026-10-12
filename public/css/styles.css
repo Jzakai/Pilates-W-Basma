@@ -187,6 +187,9 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
 .account-nav { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 24px; }
 .account-nav a { border: 1px solid var(--line); background: var(--surface); color: var(--muted); border-radius: 999px; padding: 7px 14px; font-size: 0.9rem; text-decoration: none; }
 .account-nav a:hover { color: var(--ink); }
+.account-nav a[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
+.account-nav .count:empty { display: none; }
+.account-nav .count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 999px; background: var(--clay); color: #fff; font-size: 0.75rem; font-weight: 600; text-align: center; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 18px; box-shadow: var(--shadow); }
 .card h2 { font-size: 1.6rem; margin-bottom: 4px; }
 .card .lead { color: var(--muted); margin-bottom: 14px; font-size: 0.95rem; }
@@ -203,3 +206,9 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
 .ledger div { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--line); }
 .plus { color: var(--accent-dark); font-weight: 600; }
 .minus { color: var(--muted); }
+
+@media (max-width: 600px) {
+  .brand { font-size: 1.2rem; white-space: nowrap; }
+  .site-header .nav a { margin-left: 12px; white-space: nowrap; font-size: 0.9rem; }
+  .site-header .nav a.hide-sm { display: none; }
+}
