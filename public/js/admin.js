@@ -402,3 +402,9 @@ resetTemplateForm();
 loadList();
 updateReceiptCount();
 api('/api/admin/clients').then((list) => { document.getElementById('client-count').textContent = list.length ? `(${list.length})` : ''; }).catch(() => {});
+
+document.getElementById('admin-logout').addEventListener('click', async (e) => {
+  e.preventDefault();
+  await api('/api/admin/logout', { body: {} }).catch(() => {});
+  location.href = '/admin/login';
+});

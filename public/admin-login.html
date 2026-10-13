@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Dashboard sign in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body data-no-account>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="/" data-studio-name>Pilates w Basma</a>
+      <nav class="nav"><a href="/">View site</a></nav>
+    </div>
+  </header>
+  <main class="wrap auth">
+    <form class="panel" id="admin-login-form" novalidate>
+      <h2>Studio dashboard</h2>
+      <p class="fine">For the instructor only. Clients sign in from <a href="/login.html">the client sign-in page</a>.</p>
+      <div id="notice"></div>
+      <label>Username <input name="username" autocomplete="username" autocapitalize="none" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn block" type="submit">Sign in</button>
+    </form>
+  </main>
+  <script src="/js/common.js"></script>
+  <script>
+    loadStudio();
+    const form = document.getElementById('admin-login-form');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!form.reportValidity()) return;
+      const btn = form.querySelector('button[type=submit]');
+      btn.disabled = true;
+      try {
+        await api('/api/admin/login', { body: Object.fromEntries(new FormData(form)) });
+        location.href = '/admin';
+      } catch (err) {
+        document.getElementById('notice').replaceChildren(el('div', { class: 'notice error' }, err.message));
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

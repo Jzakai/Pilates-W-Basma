@@ -56,6 +56,7 @@ test('website: sign up, book, upload a receipt, instructor opens it and approves
   const config = {
     root: path.join(__dirname, '..'),
     baseUrl: 'http://test',
+    adminUsername: 'admin',
     adminPassword: 'admin-pass',
     maxUploadMb: 1,
     studio: { name: 'Test Studio', instructor: 'Basma', timezone: 'UTC', currency: 'sar', weeksAhead: 1, location: 'Studio' },
@@ -96,7 +97,23 @@ test('website: sign up, book, upload a receipt, instructor opens it and approves
     const { paymentId } = await pay.json();
     assert.equal(fs.readdirSync(dir).length, 1);
 
-    const auth = { authorization: `Basic ${Buffer.from('admin:admin-pass').toString('base64')}` };
+    // Dashboard: sign-in page instead of a browser popup.
+    const page = await fetch(`${base}/admin`, { redirect: 'manual' });
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get('location'), '/admin/login');
+    assert.equal((await fetch(`${base}/api/admin/payments`)).status, 401);
+    const login = (body) => fetch(`${base}/api/admin/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    assert.equal((await login({ username: 'admin', password: 'wrong' })).status, 401);
+    assert.equal((await login({ username: 'basma', password: 'admin-pass' })).status, 401);
+    const ok = await login({ username: 'Admin', password: 'admin-pass' });
+    assert.equal(ok.status, 200);
+    assert.match(ok.headers.get('set-cookie'), /HttpOnly/i);
+    const adminCookie = ok.headers.get('set-cookie').split(';')[0];
+    const [name, value] = adminCookie.split('=');
+    const forged = `${name}=${Number(value.split('.')[0]) + 1}.${value.split('.')[1]}`;
+    assert.equal((await fetch(`${base}/api/admin/payments`, { headers: { cookie: forged } })).status, 401);
+    assert.equal((await fetch(`${base}/admin`, { headers: { cookie: adminCookie }, redirect: 'manual' })).status, 200);
+    const auth = { cookie: adminCookie };
     const file = await fetch(`${base}/api/admin/payments/${paymentId}/receipt`, { headers: auth });
     assert.equal(file.headers.get('content-type'), 'image/png');
     assert.equal(await file.text(), 'fake-png');

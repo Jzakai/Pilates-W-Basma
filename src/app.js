@@ -21,19 +21,34 @@ function safeEqual(a, b) {
   return crypto.timingSafeEqual(ha, hb);
 }
 
+// Dashboard sign-in: a signed cookie "<expiry>.<signature>". The signing key comes from
+// ADMIN_PASSWORD, so changing the password signs everyone out.
+const ADMIN_COOKIE = 'admin_sid';
+const ADMIN_SESSION_MS = 12 * 3600_000;
+
+function adminKey(config) {
+  return crypto.createHash('sha256').update(`admin-session:${config.adminPassword}`).digest();
+}
+
+function adminToken(config, now = Date.now()) {
+  const exp = String(now + ADMIN_SESSION_MS);
+  return `${exp}.${crypto.createHmac('sha256', adminKey(config)).update(exp).digest('base64url')}`;
+}
+
+function validAdminToken(config, token, now = Date.now()) {
+  if (!config.adminPassword || !token) return false;
+  const [exp, sig] = String(token).split('.');
+  if (!exp || !sig || !(Number(exp) > now)) return false;
+  return safeEqual(sig, crypto.createHmac('sha256', adminKey(config)).update(exp).digest('base64url'));
+}
+
 function adminAuth(config) {
   return (req, res, next) => {
     if (!config.adminPassword) {
       return res.status(503).json({ error: 'Set ADMIN_PASSWORD to enable the dashboard.' });
     }
-    const [scheme, encoded] = (req.headers.authorization || '').split(' ');
-    if (scheme === 'Basic' && encoded) {
-      const decoded = Buffer.from(encoded, 'base64').toString();
-      const password = decoded.slice(decoded.indexOf(':') + 1);
-      if (safeEqual(password, config.adminPassword)) return next();
-    }
-    res.set('WWW-Authenticate', 'Basic realm="Studio dashboard", charset="UTF-8"');
-    res.status(401).send('Authentication required');
+    if (validAdminToken(config, readCookie(req, ADMIN_COOKIE))) return next();
+    res.status(401).json({ error: 'Please sign in to the dashboard.', adminSignIn: true });
   };
 }
 
@@ -238,6 +253,21 @@ function createApp({ config, service, accounts, storage }) {
 
   // ----------------------------------------------------------------- admin
 
+  const adminCookie = { httpOnly: true, sameSite: 'strict', secure, path: '/' };
+  app.post('/api/admin/login', authLimit, (req, res) => {
+    if (!config.adminPassword) return res.status(503).json({ error: 'Set ADMIN_PASSWORD to enable the dashboard.' });
+    const username = String(req.body.username || '').trim().toLowerCase();
+    const okUser = safeEqual(username, config.adminUsername.toLowerCase());
+    const okPass = safeEqual(String(req.body.password || ''), config.adminPassword);
+    if (!okUser || !okPass) return res.status(401).json({ error: 'Username or password is incorrect.' });
+    res.cookie(ADMIN_COOKIE, adminToken(config), { ...adminCookie, maxAge: ADMIN_SESSION_MS });
+    res.json({ ok: true });
+  });
+  app.post('/api/admin/logout', (req, res) => {
+    res.clearCookie(ADMIN_COOKIE, adminCookie);
+    res.json({ ok: true });
+  });
+
   const admin = express.Router();
   admin.use(adminAuth(config));
   admin.get('/sessions', h(async (req, res) => res.json(await service.adminSessions({ includePast: req.query.past === '1' }))));
@@ -280,7 +310,13 @@ function createApp({ config, service, accounts, storage }) {
 
   // ---------------------------------------------------------- static pages
 
-  app.get(['/admin', '/admin.html'], adminAuth(config), (req, res) => {
+  app.get(['/admin/login', '/admin-login.html'], (req, res) => {
+    if (validAdminToken(config, readCookie(req, ADMIN_COOKIE))) return res.redirect('/admin');
+    res.sendFile(path.join(config.root, 'public', 'admin-login.html'));
+  });
+  app.get(['/admin', '/admin.html'], (req, res) => {
+    if (!validAdminToken(config, readCookie(req, ADMIN_COOKIE))) return res.redirect('/admin/login');
+    res.set('Cache-Control', 'no-store');
     res.sendFile(path.join(config.root, 'public', 'admin.html'));
   });
   app.use(express.static(path.join(config.root, 'public'), { extensions: ['html'] }));

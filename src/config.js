@@ -73,6 +73,7 @@ const config = {
   port: Number(env.PORT) || 3000,
   // RENDER_EXTERNAL_URL is set automatically on Render.
   baseUrl: (env.BASE_URL || env.RENDER_EXTERNAL_URL || `http://localhost:${Number(env.PORT) || 3000}`).replace(/\/$/, ''),
+  adminUsername: env.ADMIN_USERNAME || 'admin',
   adminPassword: env.ADMIN_PASSWORD || '',
   // Postgres connection string (Supabase). Without it a local SQLite file is used.
   databaseUrl: env.DATABASE_URL || '',

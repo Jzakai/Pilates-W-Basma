@@ -105,7 +105,7 @@ Already have the service? Add the three Supabase variables under **Environment**
 
 With Supabase connected, nothing is lost when Render restarts, so the free plan works for real bookings. It still sleeps after about 15 minutes without visitors, so the first visit after a quiet spell takes up to a minute to load, and payment reminders and releases of unpaid spots run when it wakes up rather than exactly on time. The Starter plan (always on) avoids both.
 
-HTTPS is automatic on Render. Client sign-ins use secure cookies over HTTPS, and the dashboard uses HTTP basic authentication with username `admin` and `ADMIN_PASSWORD`. Emails appear under the service's **Logs** tab until SMTP is set up.
+HTTPS is automatic on Render. Client sign-ins use secure cookies over HTTPS, and the dashboard has its own sign-in page at `/admin/login` (username `admin`, or `ADMIN_USERNAME` if set, and `ADMIN_PASSWORD`). Dashboard sign-ins last 12 hours; changing `ADMIN_PASSWORD` signs everyone out. Emails appear under the service's **Logs** tab until SMTP is set up.
 
 ## How it works
 

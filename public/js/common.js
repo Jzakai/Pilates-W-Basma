@@ -11,6 +11,7 @@ async function api(path, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    if (data.adminSignIn) location.href = '/admin/login';
     const err = new Error(data.error || 'Something went wrong. Please try again.');
     Object.assign(err, data, { status: res.status });
     throw err;
