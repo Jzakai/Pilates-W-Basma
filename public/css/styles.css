@@ -45,7 +45,7 @@ a { color: var(--accent-dark); }
 .nav a:hover { color: var(--ink); }
 
 /* -------------------------------------------------------------------- hero */
-.hero { padding: 72px 0 56px; text-align: center; }
+.hero { padding-top: 72px; padding-bottom: 56px; text-align: center; }
 .hero .eyebrow { text-transform: uppercase; letter-spacing: 0.18em; font-size: 0.78rem; color: var(--clay); font-weight: 600; margin-bottom: 12px; }
 .hero p { color: var(--muted); font-size: 1.15rem; max-width: 560px; margin: 0 auto 28px; }
 
@@ -223,7 +223,8 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
 .how ul { padding: 0; list-style: none; display: grid; gap: 8px; margin-bottom: 16px; }
 .how li strong { display: block; color: var(--ink); font-size: 0.92rem; }
 @media (max-width: 640px) {
-  .hero { padding: 40px 0 32px; }
+  .hero { padding-top: 40px; padding-bottom: 32px; }
+  .hero p { max-width: 300px; }
   .hero p { font-size: 1rem; margin-bottom: 20px; }
   #schedule { padding-top: 8px; }
 }
