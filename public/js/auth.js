@@ -35,7 +35,7 @@ bind('signin-form', 'notice', async (data) => {
 
 bind('forgot-form', 'forgot-notice', async (data) => {
   await api('/api/auth/forgot', { body: data });
-  show('forgot-notice', `If an account exists for ${data.email}, we've emailed a reset link. It works for 1 hour.`, 'info');
+  show('forgot-notice', t('If an account exists for {email}, we\'ve emailed a reset link. It works for 1 hour.', { email: data.email }), 'info');
 });
 
 bind('signup-form', 'notice', async (data) => {
@@ -69,5 +69,5 @@ if (activity) {
   });
 }
 if (param('next') && document.getElementById('signup-form')) {
-  document.getElementById('signup-notice-text').textContent = 'Create an account to finish booking. Your details are saved for next time.';
+  document.getElementById('signup-notice-text').textContent = t('Create an account to finish booking. Your details are saved for next time.');
 }

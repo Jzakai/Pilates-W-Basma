@@ -51,6 +51,10 @@ The weekly classes are copied into the database the first time the site starts. 
 
 > ⚠️ The IBAN and STC Pay number in `paymentInstructions` are **placeholders**. Put the real ones in before going live.
 
+## Arabic
+
+Client pages have an English / العربية switch in the header. The choice is remembered on that device, and Arabic pages read right to left. Translations live in `public/js/i18n.js` (keyed by the English text). The studio texts in Arabic, including the payment instructions, are in the `ar` block of `schedule.json`: update them together with the English ones. The instructor dashboard and the emails stay in English.
+
 ## Sending emails
 
 Clients get an email when they book, when a receipt is received, approved or rejected, payment reminders, cancellations, waitlist offers and password resets. Booking confirmations include a **calendar invite** (`.ics`) that adds the class to Google Calendar, Apple Calendar or Outlook, and confirmed bookings also have an "Add to calendar" link in My account.

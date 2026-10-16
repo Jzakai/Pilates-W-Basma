@@ -1,5 +1,5 @@
 {
-  "_readme": "Studio details and the starting class timetable. The weekly classes below are loaded into the database the first time the site starts; after that, add and edit classes from the instructor dashboard (/admin). Times are 24h (HH:MM) in the studio timezone. Prices are in SAR.",
+  "_readme": "Studio details and the starting class timetable. The weekly classes below are loaded into the database the first time the site starts; after that, add and edit classes from the instructor dashboard (/admin). Times are 24h (HH:MM) in the studio timezone. Prices are in SAR. The \"ar\" block holds the Arabic versions of the studio texts shown when a visitor switches to Arabic; keep its paymentInstructions in step with the English one.",
   "studio": {
     "name": "Pilates w Basma",
     "instructor": "Basma",
@@ -14,7 +14,15 @@
     "timezone": "Asia/Riyadh",
     "currency": "sar",
     "weeksAhead": 4,
-    "paymentInstructions": "Class fee: 30 SAR per class\nName: Basma Labani\nIBAN: SA00 0000 0000 0000 0000 0000 (Saudi National Bank)\nOR STC Pay: +9665XXXXXXXX\n\nAfter transferring, upload a screenshot or PDF of the receipt."
+    "paymentInstructions": "Class fee: 30 SAR per class\nName: Basma Labani\nIBAN: SA00 0000 0000 0000 0000 0000 (Saudi National Bank)\nOR STC Pay: +9665XXXXXXXX\n\nAfter transferring, upload a screenshot or PDF of the receipt.",
+    "ar": {
+      "eyebrow": "بيلاتس · كاوست · للسيدات فقط",
+      "tagline": "تعالي كما أنتِ، واخرجي أقوى وأكثر نشاطًا.",
+      "about": "حصص بيلاتس للسيدات في كاوست. الأماكن محدودة، فاحجزي مكانك في إحدى الحصص القادمة.",
+      "notice": "الحصص للسيدات فقط.",
+      "location": "استوديو هاربر فيتنس، كاوست",
+      "paymentInstructions": "رسوم الحصة: 30 ريالًا للحصة\nالاسم: Basma Labani\nالآيبان: SA00 0000 0000 0000 0000 0000 (البنك الأهلي السعودي)\nأو STC Pay: +9665XXXXXXXX\n\nبعد التحويل، ارفعي صورة أو ملف PDF للإيصال."
+    }
   },
   "classes": [
     {

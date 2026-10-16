@@ -134,6 +134,7 @@ function createApp({ config, service, accounts, storage }) {
       instagram: studio.instagram,
       timezone: studio.timezone,
       paymentInstructions: studio.paymentInstructions,
+      ar: studio.ar,
       bookingCutoffHours: config.bookingCutoffHours,
       paymentDeadlineHours: config.paymentDeadlineHours,
       cancellationHours: config.cancellationHours,

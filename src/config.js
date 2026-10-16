@@ -57,6 +57,8 @@ function loadSchedule(file = process.env.SCHEDULE_PATH || path.join(ROOT, 'sched
       weeksAhead: studio.weeksAhead || 4,
       // Bank / STC Pay details shown to clients when they pay.
       paymentInstructions: studio.paymentInstructions || '',
+      // Optional Arabic versions of the texts above, shown when a visitor switches to Arabic.
+      ar: studio.ar || {},
     },
     classes,
   };

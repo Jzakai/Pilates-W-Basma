@@ -9,6 +9,8 @@ const STATUS = {
 };
 const badge = (status) => el('span', { class: `badge ${STATUS[status]?.[1] ?? ''}` }, STATUS[status]?.[0] ?? status);
 const classLine = (b) => `${fmtDay(b.startsAt)} · ${fmtRange(b.startsAt, b.durationMinutes)}`;
+// Deadlines: English text from the server, or the timestamp shown in Arabic.
+const deadline = (ms, text) => (LANG === 'ar' && ms ? fmtMoment(ms, studio.timezone) : text);
 
 function notice(target, message, kind = 'info') {
   document.getElementById(target).replaceChildren(message ? el('div', { class: `notice ${kind}` }, message) : '');
@@ -21,7 +23,7 @@ async function load() {
     if (err.status === 401) return goToSignIn();
     return notice('result', err.message, 'error');
   }
-  document.getElementById('hello').textContent = `Hi, ${account.user.name.split(' ')[0]}`;
+  document.getElementById('hello').textContent = t('Hi, {name}', { name: account.user.name.split(' ')[0] });
   const due = account.upcoming.filter((b) => b.status === 'awaiting_payment').length;
   document.getElementById('count-payments').textContent = due || '';
   document.getElementById('count-bookings').textContent = account.upcoming.length || '';
@@ -40,30 +42,31 @@ function renderPayments() {
   const due = account.upcoming.filter((b) => b.status === 'awaiting_payment');
   const body = document.getElementById('pay-body');
   document.getElementById('pay-lead').textContent = due.length
-    ? `Choose the classes you're paying for, transfer the total and upload the receipt. You can pay for several classes with one transfer. Unpaid spots are released ${studio.paymentDeadlineHours} hours before class.`
-    : 'Nothing to pay right now.';
+    ? t('Choose the classes you\'re paying for, transfer the total and upload the receipt. You can pay for several classes with one transfer. Unpaid spots are released {deadline} before class.', { deadline: duration(studio.paymentDeadlineHours) })
+    : t('Nothing to pay right now.');
   if (!due.length) return body.replaceChildren();
 
   const form = el('form', { id: 'pay-form' });
   const checks = due.map((b) => el('div', { class: 'item' },
     el('label', { class: 'check' },
       el('input', { type: 'checkbox', name: 'bookingIds', value: b.id, checked: true, onchange: updateTotal }),
-      el('span', { class: 'what' }, el('strong', {}, b.title), el('span', {}, `${classLine(b)} · pay by ${b.payBy}`))),
+      el('span', { class: 'what' }, el('strong', {}, b.title), el('span', {}, t('{when} · pay by {deadline}', { when: classLine(b), deadline: deadline(b.payByAt, b.payBy) })))),
     el('span', {}, b.amount),
   ));
   const total = el('div', { class: 'pay-total' }, el('span', {}, 'Total'), el('span', { id: 'pay-total' }));
   const useCredit = account.creditMinor > 0
     ? el('label', { class: 'check', style: 'margin:8px 0 14px;display:flex;gap:10px;align-items:center;font-weight:500' },
       el('input', { type: 'checkbox', name: 'useCredits', checked: true, style: 'width:20px;height:20px;margin:0', onchange: updateTotal }),
-      `Use my credit (${account.credit})`)
+      t('Use my credit ({credit})', { credit: t(account.credit) }))
     : null;
-  const instructions = el('div', { class: 'transfer-box', id: 'transfer-box' }, account.paymentInstructions);
+  const instructions = el('div', { class: 'transfer-box', id: 'transfer-box' },
+    (LANG === 'ar' && studio.ar?.paymentInstructions) || account.paymentInstructions);
   const file = el('label', { id: 'receipt-field' }, 'Transfer receipt ',
-    el('span', { class: 'opt' }, `(photo or PDF, up to ${studio.maxUploadMb} MB)`),
+    el('span', { class: 'opt' }, t('(photo or PDF, up to {mb} MB)', { mb: studio.maxUploadMb })),
     el('input', { type: 'file', name: 'receipt', accept: 'image/*,application/pdf' }));
 
   form.append(
-    account.lastRejection ? el('div', { class: 'notice warn' }, `Your last receipt was not accepted: ${account.lastRejection}. Please upload a correct one.`) : '',
+    account.lastRejection ? el('div', { class: 'notice warn' }, t('Your last receipt was not accepted: {reason}. Please upload a correct one.', { reason: account.lastRejection })) : '',
     ...checks, total, useCredit ?? '', instructions, file,
     el('div', { id: 'pay-notice' }),
     el('button', { class: 'btn block', type: 'submit', id: 'pay-submit' }, 'Upload receipt'),
@@ -90,14 +93,14 @@ function paymentPlan() {
 function updateTotal() {
   const { ids, byTransfer, byCredit } = paymentPlan();
   document.getElementById('pay-total').textContent = byCredit
-    ? `${money(byTransfer)} to transfer (+ ${money(byCredit)} from credit)`
+    ? t('{transfer} to transfer (+ {credit} from credit)', { transfer: money(byTransfer), credit: money(byCredit) })
     : money(byTransfer);
   const needsReceipt = byTransfer > 0;
   document.getElementById('receipt-field').hidden = !needsReceipt;
   document.getElementById('transfer-box').hidden = !needsReceipt;
   const btn = document.getElementById('pay-submit');
   btn.disabled = ids.length === 0;
-  btn.textContent = needsReceipt ? 'Upload receipt' : 'Pay with credit';
+  btn.textContent = t(needsReceipt ? 'Upload receipt' : 'Pay with credit');
 }
 
 async function pay(e) {
@@ -105,8 +108,8 @@ async function pay(e) {
   const form = e.target;
   const { ids, byTransfer } = paymentPlan();
   const file = form.receipt.files[0];
-  if (byTransfer > 0 && !file) return notice('pay-notice', 'Please attach your transfer receipt.', 'error');
-  if (file && file.size > studio.maxUploadMb * 1024 * 1024) return notice('pay-notice', `The receipt must be smaller than ${studio.maxUploadMb} MB.`, 'error');
+  if (byTransfer > 0 && !file) return notice('pay-notice', t('Please attach your transfer receipt.'), 'error');
+  if (file && file.size > studio.maxUploadMb * 1024 * 1024) return notice('pay-notice', t('The receipt must be smaller than {mb} MB.', { mb: studio.maxUploadMb }), 'error');
 
   const data = new FormData();
   data.append('bookingIds', ids.join(','));
@@ -114,12 +117,12 @@ async function pay(e) {
   if (byTransfer > 0) data.append('receipt', file);
   const btn = document.getElementById('pay-submit');
   btn.disabled = true;
-  btn.textContent = 'Uploading…';
+  btn.textContent = t('Uploading…');
   try {
     const r = await api('/api/payments', { body: data });
     const parts = [];
-    if (r.byCredit.length) parts.push(`${r.byCredit.length} class${r.byCredit.length > 1 ? 'es' : ''} paid with credit and confirmed.`);
-    if (r.byTransfer.length) parts.push(`Receipt uploaded — ${studio.instructor || 'the studio'} will check it and you'll get a confirmation email.`);
+    if (r.byCredit.length) parts.push(t(r.byCredit.length > 1 ? '{n} classes paid with credit and confirmed.' : '{n} class paid with credit and confirmed.', { n: r.byCredit.length }));
+    if (r.byTransfer.length) parts.push(t('Receipt uploaded — {who} will check it and you\'ll get a confirmation email.', { who: t(studio.instructor || 'the studio') }));
     notice('result', parts.join(' '));
     await load();
     showSection(account.upcoming.some((b) => b.status === 'awaiting_payment') ? 'payments' : 'bookings');
@@ -135,9 +138,9 @@ async function pay(e) {
 function renderBookings() {
   const list = account.upcoming;
   document.getElementById('bookings-lead').textContent =
-    `You can cancel online up to ${studio.cancellationHours} hours before class. Paid classes are returned to you as credit.`;
+    t('You can cancel online up to {cancel} before class. Paid classes are returned to you as credit.', { cancel: duration(studio.cancellationHours) });
   document.getElementById('bookings-body').replaceChildren(...(list.length ? list.map((b) => el('div', { class: 'item' },
-    el('span', { class: 'what' }, el('strong', {}, b.title), el('span', {}, `${classLine(b)} · ${b.amount}`)),
+    el('span', { class: 'what' }, el('strong', {}, b.title), el('span', {}, `${classLine(b)} · ${t(b.amount)}`)),
     el('span', { class: 'acts' },
       badge(b.status),
       b.status === 'confirmed' ? el('a', { class: 'btn secondary small', href: `/api/bookings/${b.id}/calendar.ics` }, 'Add to calendar') : null,
@@ -147,11 +150,12 @@ function renderBookings() {
 
 async function cancel(b) {
   const paid = b.status === 'confirmed' && b.paidWith !== 'free';
-  const msg = `Cancel ${b.title} on ${classLine(b)}?` + (paid ? `\n\n${b.amount} will be added to your account credit.` : '');
+  const msg = t('Cancel {title} on {when}?', { title: t(b.title), when: classLine(b) })
+    + (paid ? `\n\n${t('{amount} will be added to your account credit.', { amount: t(b.amount) })}` : '');
   if (!confirm(msg)) return;
   try {
     await api(`/api/bookings/${b.id}/cancel`, { body: {} });
-    notice('result', 'Your booking has been cancelled.');
+    notice('result', t('Your booking has been cancelled.'));
     load();
   } catch (err) {
     alert(err.message);
@@ -164,7 +168,9 @@ function renderWaitlist() {
   const list = account.waitlist;
   document.getElementById('waitlist-body').replaceChildren(...(list.length ? list.map((w) => el('div', { class: 'item' },
     el('span', { class: 'what' }, el('strong', {}, w.title),
-      el('span', {}, w.status === 'offered' ? `${classLine(w)} · a spot is held for you until ${w.offerExpires}` : `${classLine(w)} · number ${w.position} in line`)),
+      el('span', {}, w.status === 'offered'
+        ? t('{when} · a spot is held for you until {deadline}', { when: classLine(w), deadline: deadline(w.offerExpiresAt, w.offerExpires) })
+        : t('{when} · number {n} in line', { when: classLine(w), n: w.position }))),
     el('span', { class: 'acts' },
       w.status === 'offered' ? el('button', { class: 'btn small', onclick: () => claim(w) }, 'Claim spot') : el('span', { class: 'badge full' }, 'Waiting'),
       el('button', { class: 'btn secondary small', onclick: () => leave(w) }, 'Leave')),
@@ -174,7 +180,7 @@ function renderWaitlist() {
 async function claim(w) {
   try {
     await api(`/api/waitlist/${w.id}/claim`, { body: {} });
-    notice('result', `The spot is yours! Please pay for it below to confirm.`);
+    notice('result', t('The spot is yours! Please pay for it below to confirm.'));
     await load();
     showSection('payments');
   } catch (err) {
@@ -184,7 +190,7 @@ async function claim(w) {
 }
 
 async function leave(w) {
-  if (!confirm(`Leave the waiting list for ${w.title}?`)) return;
+  if (!confirm(t('Leave the waiting list for {title}?', { title: t(w.title) }))) return;
   try {
     await api(`/api/waitlist/${w.id}/leave`, { body: {} });
     load();
@@ -200,8 +206,8 @@ function renderCredits() {
     el('div', { class: 'credit-big' }, account.credit),
     account.ledger.length
       ? el('div', { class: 'ledger' }, account.ledger.map((l) => el('div', {},
-        el('span', {}, `${new Date(l.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} · ${l.reason}`),
-        el('span', { class: l.positive ? 'plus' : 'minus' }, `${l.positive ? '+' : '−'}${l.amount.replace('-', '')}`))))
+        el('span', {}, `${new Date(l.at).toLocaleDateString(DATE_LOCALE, { day: 'numeric', month: 'short' })} · ${t(l.reason)}`),
+        el('span', { class: l.positive ? 'plus' : 'minus' }, `${l.positive ? '+' : '−'}${t(l.amount.replace('-', ''))}`))))
       : el('p', { class: 'fine' }, 'No credit history yet.'),
   );
 }
@@ -218,7 +224,7 @@ document.getElementById('profile-form').addEventListener('submit', async (e) => 
   e.preventDefault();
   try {
     await api('/api/me/profile', { body: Object.fromEntries(new FormData(e.target)) });
-    notice('profile-notice', 'Saved.');
+    notice('profile-notice', t('Saved.'));
   } catch (err) {
     notice('profile-notice', err.message, 'error');
   }
@@ -228,7 +234,7 @@ function renderHistory() {
   const list = account.history;
   document.getElementById('history-body').replaceChildren(...(list.length ? list.map((b) => el('div', { class: 'item' },
     el('span', { class: 'what' }, el('strong', {}, b.title),
-      el('span', {}, `${classLine(b)}${b.cancelReason ? ` · ${b.cancelReason}` : ''}`)),
+      el('span', {}, `${classLine(b)}${b.cancelReason ? ` · ${t(b.cancelReason)}` : ''}`)),
     badge(b.past && b.status === 'confirmed' ? 'confirmed' : b.status),
   )) : [el('p', { class: 'fine' }, 'Nothing here yet.')]));
 }
@@ -243,8 +249,8 @@ const booked = JSON.parse(sessionStorage.getItem('bookingResult') || 'null');
 sessionStorage.removeItem('bookingResult');
 if (booked) {
   const lines = [];
-  if (booked.booked.length) lines.push(`${booked.booked.length} class${booked.booked.length > 1 ? 'es' : ''} reserved. Pay below now, or come back later before the deadline.`);
-  for (const f of booked.failed) lines.push(`One class could not be booked: ${f.error}`);
+  if (booked.booked.length) lines.push(t(booked.booked.length > 1 ? '{n} classes reserved. Pay below now, or come back later before the deadline.' : '{n} class reserved. Pay below now, or come back later before the deadline.', { n: booked.booked.length }));
+  for (const f of booked.failed) lines.push(t('One class could not be booked: {error}', { error: t(f.error) }));
   notice('result', lines.join(' '), booked.booked.length ? 'info' : 'error');
 }
 

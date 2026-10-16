@@ -539,6 +539,7 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
         cancelReason: b.cancel_reason,
         canCancel: canCancel(b, s),
         payBy: b.status === 'awaiting_payment' ? deadlineText(hoursBefore(s, config.paymentDeadlineHours)) : null,
+        payByAt: b.status === 'awaiting_payment' ? hoursBefore(s, config.paymentDeadlineHours) : null,
         past: b.starts_at <= current,
       };
     };
@@ -555,6 +556,7 @@ function createBookingService({ db, config, mailer, now = () => Date.now() }) {
         status: w.offer_expires_at && w.offer_expires_at <= now() ? 'expired' : w.status,
         position: await waitlistPosition(db, w),
         offerExpires: w.status === 'offered' ? deadlineText(w.offer_expires_at) : null,
+        offerExpiresAt: w.status === 'offered' ? w.offer_expires_at : null,
       });
     }
     const ledger = await db.all('SELECT amount_minor, reason, created_at FROM credit_ledger WHERE user_id = $1 ORDER BY id DESC LIMIT 50', [u.id]);

@@ -41,7 +41,8 @@ a { color: var(--accent-dark); }
 .site-header { border-bottom: 1px solid var(--line); background: var(--surface); }
 .site-header .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; gap: 16px; }
 .brand { font-family: var(--serif); font-size: 1.5rem; font-weight: 600; color: var(--ink); text-decoration: none; }
-.nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-size: 0.95rem; }
+.nav { display: flex; align-items: center; white-space: nowrap; }
+.nav a { color: var(--muted); text-decoration: none; margin-inline-start: 20px; font-size: 0.95rem; }
 .nav a:hover { color: var(--ink); }
 
 /* -------------------------------------------------------------------- hero */
@@ -97,7 +98,7 @@ section { padding: 48px 0; }
 .class-card .time small { display: block; font-family: var(--sans); font-size: 0.75rem; color: var(--muted); font-weight: 400; margin-top: 6px; }
 .class-card h3 { margin: 0 0 2px; }
 .class-card .meta { color: var(--muted); font-size: 0.9rem; }
-.class-card .actions { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.class-card .actions { text-align: end; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .class-card.cancelled { opacity: 0.6; }
 
 .badge { display: inline-block; font-size: 0.78rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-dark); white-space: nowrap; }
@@ -110,7 +111,7 @@ section { padding: 48px 0; }
 @media (max-width: 600px) {
   .class-card { grid-template-columns: 64px 1fr; }
   .class-card .actions { grid-column: 1 / -1; flex-direction: row; justify-content: space-between; align-items: center; }
-  .nav a { margin-left: 14px; }
+  .nav a { margin-inline-start: 14px; }
   .nav a.hide-sm { display: none; }
 }
 
@@ -121,7 +122,7 @@ dialog {
 }
 dialog::backdrop { background: rgba(47, 42, 38, 0.45); }
 .modal-body { padding: 28px; }
-.modal-close { float: right; background: none; border: none; font-size: 1.6rem; line-height: 1; color: var(--muted); cursor: pointer; }
+.modal-close { float: inline-end; background: none; border: none; font-size: 1.6rem; line-height: 1; color: var(--muted); cursor: pointer; }
 .modal-class { background: var(--bg); border-radius: 10px; padding: 12px 14px; margin: 12px 0 20px; font-size: 0.95rem; }
 .modal-class strong { display: block; }
 
@@ -188,7 +189,7 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
 .account-nav a:hover { color: var(--ink); }
 .account-nav a[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: #fff; }
 .account-nav .count:empty { display: none; }
-.account-nav .count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 999px; background: var(--clay); color: #fff; font-size: 0.75rem; font-weight: 600; text-align: center; }
+.account-nav .count { display: inline-block; min-width: 20px; padding: 0 6px; margin-inline-start: 4px; border-radius: 999px; background: var(--clay); color: #fff; font-size: 0.75rem; font-weight: 600; text-align: center; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 18px; box-shadow: var(--shadow); }
 .card h2 { font-size: 1.6rem; margin-bottom: 4px; }
 .card .lead { color: var(--muted); margin-bottom: 14px; font-size: 0.95rem; }
@@ -208,7 +209,7 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
 
 @media (max-width: 600px) {
   .brand { font-size: 1.2rem; white-space: nowrap; }
-  .site-header .nav a { margin-left: 12px; white-space: nowrap; font-size: 0.9rem; }
+  .site-header .nav a { margin-inline-start: 12px; white-space: nowrap; font-size: 0.9rem; }
   .site-header .nav a.hide-sm { display: none; }
 }
 
@@ -223,14 +224,14 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
 
 /* Timeline: numbered dots joined by a line; each step opens for details. */
 .steps { list-style: none; margin: 0; padding: 4px 16px 16px; counter-reset: step; }
-.steps li { position: relative; padding-left: 44px; counter-increment: step; }
+.steps li { position: relative; padding-inline-start: 44px; counter-increment: step; }
 .steps li::before {
-  content: counter(step); position: absolute; left: 0; top: 8px; width: 28px; height: 28px; border-radius: 50%;
+  content: counter(step); position: absolute; inset-inline-start: 0; top: 8px; width: 28px; height: 28px; border-radius: 50%;
   background: var(--accent-soft); color: var(--accent-dark); border: 1px solid var(--accent);
   display: grid; place-items: center; font-weight: 600; font-size: 0.85rem; z-index: 1;
 }
 .steps li:last-child::before { background: var(--accent); color: #fff; }
-.steps li:not(:last-child)::after { content: ''; position: absolute; left: 14px; top: 36px; bottom: -8px; width: 1px; background: var(--line); }
+.steps li:not(:last-child)::after { content: ''; position: absolute; inset-inline-start: 14px; top: 36px; bottom: -8px; width: 1px; background: var(--line); }
 .steps details { padding: 6px 0 10px; }
 .steps summary { cursor: pointer; list-style: none; display: grid; grid-template-columns: 1fr auto; column-gap: 8px; }
 .steps summary::after { content: '\203A'; grid-row: 1 / span 2; grid-column: 2; align-self: center; color: var(--muted); font-size: 1.3rem; transition: transform 0.15s; }
@@ -244,4 +245,25 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
   .hero p { max-width: 300px; }
   .hero p { font-size: 1rem; margin-bottom: 20px; }
   #schedule { padding-top: 24px; }
+}
+
+/* ------------------------------------------------------------- language */
+.lang-toggle {
+  margin-inline-start: 12px; flex-shrink: 0;
+  background: none; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+  font: inherit; font-size: 0.85rem; color: var(--muted); cursor: pointer;
+}
+.lang-toggle:hover { color: var(--ink); border-color: var(--muted); }
+.lang-toggle:lang(ar) { font-family: 'IBM Plex Sans Arabic', var(--sans); }
+
+/* Arabic: an Arabic typeface (the Latin ones have no Arabic letters) and mirrored details. */
+html[lang="ar"] { --sans: 'IBM Plex Sans Arabic', 'Inter', system-ui, sans-serif; --serif: 'IBM Plex Sans Arabic', Georgia, serif; }
+html[lang="ar"] .hero .eyebrow, html[lang="ar"] .day-label { letter-spacing: 0; }
+html[dir="rtl"] .steps summary::after { content: '\2039'; }
+html[dir="rtl"] .steps details[open] summary::after { transform: rotate(-90deg); }
+@media (max-width: 640px) {
+  /* Room for the language switch: the brand and the hero button already lead to the timetable. */
+  .site-header .nav a:not(.nav-strong) { display: none; }
+  .site-header .wrap { gap: 8px; }
+  .lang-toggle { margin-inline-start: 0; padding: 3px 8px; }
 }

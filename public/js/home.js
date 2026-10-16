@@ -7,21 +7,25 @@ document.getElementById('year').textContent = new Date().getFullYear();
 
 loadStudio().then((studio) => {
   studioInfo = studio;
-  document.title = `${studio.name} — Book a class`;
-  document.getElementById('eyebrow').textContent = studio.eyebrow;
-  document.getElementById('tagline').textContent = studio.tagline;
-  document.getElementById('location').textContent = studio.location ? `📍 ${studio.location}` : '';
+  document.title = t('{name} — Book a class', { name: studio.name });
+  // Arabic versions of the studio texts come from schedule.json (studio.ar).
+  const text = (key) => (LANG === 'ar' && studio.ar?.[key]) || studio[key];
+  document.getElementById('eyebrow').textContent = text('eyebrow');
+  document.getElementById('tagline').textContent = text('tagline');
+  document.getElementById('location').textContent = studio.location ? `📍 ${text('location')}` : '';
   if (studio.notice) {
     const n = document.getElementById('hero-notice');
-    n.textContent = studio.notice;
+    n.textContent = text('notice');
     n.hidden = false;
   }
   // Booking rules in the "How booking works" steps, e.g. 48 → "2 days".
-  for (const b of document.querySelectorAll('[data-hours]')) {
-    const h = studio[b.dataset.hours];
-    if (h === undefined) continue;
-    b.textContent = h % 24 === 0 ? `${h / 24} day${h === 24 ? '' : 's'}` : `${h} hour${h === 1 ? '' : 's'}`;
-  }
+  const hours = {
+    cutoff: duration(studio.bookingCutoffHours),
+    offer: duration(studio.waitlistOfferHours),
+    deadline: duration(studio.paymentDeadlineHours),
+    cancel: duration(studio.cancellationHours),
+  };
+  for (const p of document.querySelectorAll('[data-step]')) p.replaceChildren(...tNodes(p.dataset.step, hours));
   render();
 });
 
@@ -33,8 +37,8 @@ function weekStart(local) {
 }
 
 function weekLabel(start, index) {
-  if (index === 0 && weekStart(new Date().toISOString().slice(0, 10) + 'T00:00') === start) return 'This week';
-  return `Week of ${fmtDay(start + 'T00:00', { day: 'numeric', month: 'short' })}`;
+  if (index === 0 && weekStart(new Date().toISOString().slice(0, 10) + 'T00:00') === start) return t('This week');
+  return t('Week of {date}', { date: fmtDay(start + 'T00:00', { day: 'numeric', month: 'short' }) });
 }
 
 function notify(message, kind = 'info') {
@@ -105,12 +109,12 @@ function card(s) {
     badge = el('span', { class: 'badge low' }, s.myWaitlist === 'offered' ? 'Spot offered to you!' : 'On waiting list');
     action = el('a', { class: 'btn secondary small', href: '/account.html#waitlist' }, 'View');
   } else if (s.full) {
-    badge = el('span', { class: 'badge full' }, s.waitlistCount ? `Full · ${s.waitlistCount} waiting` : 'Full');
+    badge = el('span', { class: 'badge full' }, s.waitlistCount ? t('Full · {n} waiting', { n: s.waitlistCount }) : 'Full');
     if (s.waitlistOpen) action = el('button', { class: 'btn clay small', onclick: () => joinWaitlist(s) }, 'Join waiting list');
   } else if (!s.bookingOpen) {
     badge = el('span', { class: 'badge full' }, 'Booking closed');
   } else {
-    badge = el('span', { class: `badge${s.spotsLeft <= 3 ? ' low' : ''}` }, s.spotsLeft === 1 ? '1 spot left' : `${s.spotsLeft} spots left`);
+    badge = el('span', { class: `badge${s.spotsLeft <= 3 ? ' low' : ''}` }, s.spotsLeft === 1 ? '1 spot left' : t('{n} spots left', { n: s.spotsLeft }));
     const on = selected.has(s.id);
     action = el('button', {
       class: `btn small${on ? '' : ' secondary'}`,
@@ -121,8 +125,8 @@ function card(s) {
 
   return el('article', { class: `class-card${s.cancelled ? ' cancelled' : ''}${selected.has(s.id) ? ' selected' : ''}` },
     el('div', { class: 'time' }, fmtTime(s.startsAt).split(' ')[0],
-      el('small', {}, `${fmtTime(s.startsAt).split(' ')[1]} · ${s.durationMinutes} min`)),
-    el('div', {}, el('h3', {}, s.title), el('div', { class: 'meta' }, [s.description, s.price].filter(Boolean).join(' · '))),
+      el('small', {}, t('{ampm} · {n} min', { ampm: fmtTime(s.startsAt).split(' ')[1], n: s.durationMinutes }))),
+    el('div', {}, el('h3', {}, s.title), el('div', { class: 'meta' }, [t(s.description || ''), t(s.price || '')].filter(Boolean).join(' · '))),
     el('div', { class: 'actions' }, badge, action),
   );
 }
@@ -140,8 +144,8 @@ function renderBar() {
   if (!chosen.length) return;
   const total = chosen.reduce((sum, s) => sum + s.priceMinor, 0);
   document.getElementById('select-summary').textContent =
-    `${chosen.length} class${chosen.length > 1 ? 'es' : ''} selected · ${money(total)}`;
-  document.getElementById('select-book').textContent = `Book ${chosen.length > 1 ? 'classes' : 'class'}`;
+    t(chosen.length > 1 ? '{n} classes selected · {total}' : '{n} class selected · {total}', { n: chosen.length, total: money(total) });
+  document.getElementById('select-book').textContent = t(chosen.length > 1 ? 'Book classes' : 'Book class');
 }
 
 document.getElementById('select-clear').addEventListener('click', () => {
@@ -173,7 +177,7 @@ async function joinWaitlist(s) {
   if (!user) return goToSignIn();
   try {
     const { position } = await api(`/api/sessions/${s.id}/waitlist`, { body: {} });
-    notify(`You're number ${position} on the waiting list for ${s.title}, ${fmtClass(s)}. We'll email you if a spot opens up.`);
+    notify(t('You\'re number {n} on the waiting list for {title}, {when}. We\'ll email you if a spot opens up.', { n: position, title: t(s.title), when: fmtClass(s) }));
     loadSessions();
   } catch (err) {
     notify(err.message, 'error');

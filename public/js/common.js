@@ -1,5 +1,14 @@
 // Small helpers shared by every page.
 
+// Pages without i18n.js (the instructor dashboard) stay in English.
+if (typeof window.t !== 'function') {
+  window.LANG = 'en';
+  window.DATE_LOCALE = 'en-GB';
+  window.t = (text, vars) => (vars ? String(text).replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m)) : String(text));
+  window.ampm = (pm) => (pm ? 'pm' : 'am');
+  window.duration = (h) => (h % 24 === 0 ? `${h / 24} day${h === 24 ? '' : 's'}` : `${h} hour${h === 1 ? '' : 's'}`);
+}
+
 // JSON by default; pass a FormData as body for file uploads.
 async function api(path, options = {}) {
   const isForm = typeof FormData !== 'undefined' && options.body instanceof FormData;
@@ -12,7 +21,7 @@ async function api(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (data.adminSignIn) location.href = '/admin/login';
-    const err = new Error(data.error || 'Something went wrong. Please try again.');
+    const err = new Error(t(data.error || 'Something went wrong. Please try again.'));
     Object.assign(err, data, { status: res.status });
     throw err;
   }
@@ -41,7 +50,14 @@ function goToSignIn() {
 }
 
 function money(minor) {
-  return `SAR ${(minor / 100).toFixed(minor % 100 ? 2 : 0)}`;
+  return t(`SAR ${(minor / 100).toFixed(minor % 100 ? 2 : 0)}`);
+}
+
+// A moment (ms) shown in the studio's timezone, e.g. "Saturday 17 October, 7:15 pm".
+function fmtMoment(ms, timeZone) {
+  return new Date(ms).toLocaleString(DATE_LOCALE, {
+    timeZone, weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit', hour12: true,
+  });
 }
 
 // el('div', { class: 'x', onclick: fn }, 'text', childNode) — text is always escaped.
@@ -55,7 +71,7 @@ function el(tag, attrs = {}, ...children) {
   }
   for (const child of children.flat()) {
     if (child == null || child === false) continue;
-    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    node.append(child instanceof Node ? child : document.createTextNode(typeof child === 'string' ? t(child) : String(child)));
   }
   return node;
 }
@@ -68,13 +84,13 @@ function parseLocal(local) {
 }
 
 function fmtDay(local, opts = { weekday: 'long', day: 'numeric', month: 'long' }) {
-  return new Intl.DateTimeFormat('en-GB', { ...opts, timeZone: 'UTC' }).format(parseLocal(local).date);
+  return new Intl.DateTimeFormat(DATE_LOCALE, { ...opts, timeZone: 'UTC' }).format(parseLocal(local).date);
 }
 
 function clock12(minutes) {
   const h = Math.floor(minutes / 60) % 24;
   const m = minutes % 60;
-  return { text: `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''}`, ampm: h >= 12 ? 'pm' : 'am' };
+  return { text: `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''}`, ampm: ampm(h >= 12) };
 }
 
 // "2026-10-04T19:15" -> "7:15 pm"
@@ -89,7 +105,9 @@ function fmtRange(local, durationMinutes) {
   const [h, m] = parseLocal(local).time.split(':').map(Number);
   const a = clock12(h * 60 + m);
   const b = clock12(h * 60 + m + durationMinutes);
-  return a.ampm === b.ampm ? `${a.text}–${b.text} ${b.ampm}` : `${a.text} ${a.ampm}–${b.text} ${b.ampm}`;
+  const range = a.ampm === b.ampm ? `${a.text}–${b.text} ${b.ampm}` : `${a.text} ${a.ampm}–${b.text} ${b.ampm}`;
+  // Keep "7:15–8:15" reading left to right inside Arabic text.
+  return LANG === 'ar' ? `\u2066${range}\u2069` : range;
 }
 
 function fmtClass(session) {

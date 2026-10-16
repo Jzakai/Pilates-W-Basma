@@ -43,19 +43,19 @@
             <li>
               <details>
                 <summary><span class="step-title">Pick your classes</span><span class="step-hint">Select one or more, then tap Book</span></summary>
-                <p>Online booking closes <b data-hours="bookingCutoffHours">2 days</b> before each class. If a class is full, join the waiting list: you'll get an email if a spot opens and have <b data-hours="waitlistOfferHours">12 hours</b> to claim it.</p>
+                <p data-step="Online booking closes {cutoff} before each class. If a class is full, join the waiting list: you'll get an email if a spot opens and have {offer} to claim it."></p>
               </details>
             </li>
             <li>
               <details>
                 <summary><span class="step-title">Pay by transfer</span><span class="step-hint">Bank or STC Pay, then upload the receipt</span></summary>
-                <p>Pay straight away or later from My account, any credit you have is used first. Unpaid spots are released <b data-hours="paymentDeadlineHours">1 day</b> before class, and you'll get a reminder before then.</p>
+                <p data-step="Pay straight away or later from My account, any credit you have is used first. Unpaid spots are released {deadline} before class, and you'll get a reminder before then."></p>
               </details>
             </li>
             <li>
               <details>
                 <summary><span class="step-title">You're in</span><span class="step-hint">Confirmation email with a calendar invite</span></summary>
-                <p>Basma checks your receipt and you get a confirmation by email. Can't make it? Cancel from My account up to <b data-hours="cancellationHours">12 hours</b> before class and the fee comes back as credit for another class.</p>
+                <p data-step="Basma checks your receipt and you get a confirmation by email. Can't make it? Cancel from My account up to {cancel} before class and the fee comes back as credit for another class."></p>
               </details>
             </li>
           </ol>
@@ -94,6 +94,7 @@
     </div>
   </div>
 
+  <script src="/js/i18n.js"></script>
   <script src="/js/common.js"></script>
   <script src="/js/home.js"></script>
 </body>
