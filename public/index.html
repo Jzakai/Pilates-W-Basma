@@ -15,7 +15,7 @@
     <div class="wrap">
       <a class="brand" href="/" data-studio-name>Pilates w Basma</a>
       <nav class="nav">
-        <a href="#about" class="hide-sm">About</a>
+        <a href="#about" class="hide-sm">How it works</a>
         <a href="#schedule">Timetable</a>
       </nav>
     </div>
@@ -27,21 +27,7 @@
       <h1 id="hero-title" data-studio-name>Pilates w Basma</h1>
       <p id="tagline"></p>
       <a class="btn" href="#schedule">See classes &amp; book</a>
-      <p class="hero-notice" id="hero-notice" hidden></p>
     </div>
-
-    <section class="about" id="about">
-      <div class="wrap">
-        <h2>About the classes</h2>
-        <p id="about-text"></p>
-        <div class="grid">
-          <div><strong>Book online</strong><span>Create an account, pick one or several classes and book them in one go.</span></div>
-          <div><strong>Pay by transfer</strong><span id="pay-blurb">Pay by bank transfer or STC Pay and upload your receipt — now or later from your account.</span></div>
-          <div><strong>Class full?</strong><span>Join the waiting list — if a spot opens up you'll get an email to claim it.</span></div>
-          <div><strong>Plans change</strong><span id="cancel-policy">Cancel online from your account and get the class fee back as credit.</span></div>
-        </div>
-      </div>
-    </section>
 
     <section id="schedule">
       <div class="wrap">
@@ -49,6 +35,19 @@
           <h2>Timetable</h2>
           <p id="location"></p>
         </div>
+        <p class="schedule-notice" id="hero-notice" hidden></p>
+
+        <details class="how" id="about">
+          <summary>How booking works</summary>
+          <p id="about-text"></p>
+          <ul>
+            <li><strong>Book</strong> Sign in, select one or more classes and tap Book.</li>
+            <li><strong>Pay</strong> <span id="pay-blurb">Transfer by bank or STC Pay and upload the receipt, now or later.</span></li>
+            <li><strong>Class full?</strong> Join the waiting list and we'll email you if a spot opens.</li>
+            <li><strong>Can't make it?</strong> <span id="cancel-policy">Cancel online and get the fee back as credit.</span></li>
+          </ul>
+        </details>
+
         <div class="week-tabs" role="tablist" id="week-tabs"></div>
         <div id="sessions"><div class="empty">Loading classes…</div></div>
       </div>

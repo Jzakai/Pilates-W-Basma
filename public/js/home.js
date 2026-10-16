@@ -18,7 +18,7 @@ loadStudio().then((studio) => {
     n.hidden = false;
   }
   document.getElementById('cancel-policy').textContent =
-    `Cancel online up to ${studio.cancellationHours} hours before class and get the class fee back as credit.`;
+    `Cancel online up to ${studio.cancellationHours} hours before class and get the fee back as credit.`;
   render();
 });
 

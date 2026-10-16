@@ -72,14 +72,13 @@ section { padding: 48px 0; }
 .section-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
 .section-head p { color: var(--muted); margin: 0; font-size: 0.92rem; }
 
-.about { background: var(--surface); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.about .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 24px; margin-top: 24px; }
-.about .grid div { padding: 20px; border-radius: var(--radius); background: var(--bg); }
-.about .grid strong { display: block; font-family: var(--serif); font-size: 1.25rem; margin-bottom: 4px; }
-.about .grid span { color: var(--muted); font-size: 0.95rem; }
 
 /* ----------------------------------------------------------------- schedule */
 .week-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+/* Home page: week buttons stay on one swipeable row instead of wrapping. */
+#week-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; margin-left: -16px; margin-right: -16px; padding: 0 16px; }
+#week-tabs::-webkit-scrollbar { display: none; }
+#week-tabs button { flex: 0 0 auto; }
 .week-tabs button {
   border: 1px solid var(--line); background: var(--surface); color: var(--muted);
   border-radius: 999px; padding: 7px 16px; font: 500 0.9rem var(--sans); cursor: pointer;
@@ -211,4 +210,20 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
   .brand { font-size: 1.2rem; white-space: nowrap; }
   .site-header .nav a { margin-left: 12px; white-space: nowrap; font-size: 0.9rem; }
   .site-header .nav a.hide-sm { display: none; }
+}
+
+/* ------------------------------------------------------- home: compact info */
+.schedule-notice { margin: -8px 0 16px; color: var(--clay); font-weight: 600; font-size: 0.9rem; }
+.how { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 20px; }
+.how summary { cursor: pointer; padding: 12px 16px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+.how summary::-webkit-details-marker { display: none; }
+.how summary::after { content: '+'; font-size: 1.3rem; line-height: 1; color: var(--muted); }
+.how[open] summary::after { content: '\2212'; }
+.how p, .how ul { margin: 0 16px 12px; color: var(--muted); font-size: 0.92rem; }
+.how ul { padding: 0; list-style: none; display: grid; gap: 8px; margin-bottom: 16px; }
+.how li strong { display: block; color: var(--ink); font-size: 0.92rem; }
+@media (max-width: 640px) {
+  .hero { padding: 40px 0 32px; }
+  .hero p { font-size: 1rem; margin-bottom: 20px; }
+  #schedule { padding-top: 8px; }
 }
