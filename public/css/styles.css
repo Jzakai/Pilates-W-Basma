@@ -214,17 +214,34 @@ body:has(.select-bar:not([hidden])) footer { padding-bottom: 110px; }
 
 /* ------------------------------------------------------- home: compact info */
 .schedule-notice { margin: -8px 0 16px; color: var(--clay); font-weight: 600; font-size: 0.9rem; }
-.how { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 20px; }
-.how summary { cursor: pointer; padding: 12px 16px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+.how-section { padding: 0 0 8px; }
+.how { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.how > summary { cursor: pointer; padding: 14px 16px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; align-items: center; }
 .how summary::-webkit-details-marker { display: none; }
-.how summary::after { content: '+'; font-size: 1.3rem; line-height: 1; color: var(--muted); }
-.how[open] summary::after { content: '\2212'; }
-.how p, .how ul { margin: 0 16px 12px; color: var(--muted); font-size: 0.92rem; }
-.how ul { padding: 0; list-style: none; display: grid; gap: 8px; margin-bottom: 16px; }
-.how li strong { display: block; color: var(--ink); font-size: 0.92rem; }
+.how > summary::after { content: '+'; font-size: 1.3rem; line-height: 1; color: var(--muted); }
+.how[open] > summary::after { content: '\2212'; }
+
+/* Timeline: numbered dots joined by a line; each step opens for details. */
+.steps { list-style: none; margin: 0; padding: 4px 16px 16px; counter-reset: step; }
+.steps li { position: relative; padding-left: 44px; counter-increment: step; }
+.steps li::before {
+  content: counter(step); position: absolute; left: 0; top: 8px; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent-dark); border: 1px solid var(--accent);
+  display: grid; place-items: center; font-weight: 600; font-size: 0.85rem; z-index: 1;
+}
+.steps li:last-child::before { background: var(--accent); color: #fff; }
+.steps li:not(:last-child)::after { content: ''; position: absolute; left: 14px; top: 36px; bottom: -8px; width: 1px; background: var(--line); }
+.steps details { padding: 6px 0 10px; }
+.steps summary { cursor: pointer; list-style: none; display: grid; grid-template-columns: 1fr auto; column-gap: 8px; }
+.steps summary::after { content: '\203A'; grid-row: 1 / span 2; grid-column: 2; align-self: center; color: var(--muted); font-size: 1.3rem; transition: transform 0.15s; }
+.steps details[open] summary::after { transform: rotate(90deg); }
+.step-title { font-weight: 600; padding-top: 6px; }
+.step-hint { color: var(--muted); font-size: 0.88rem; }
+.steps p { margin: 8px 0 0; color: var(--muted); font-size: 0.9rem; background: var(--bg); border-radius: 10px; padding: 10px 12px; }
+.steps p b { color: var(--ink); font-weight: 600; }
 @media (max-width: 640px) {
   .hero { padding-top: 40px; padding-bottom: 32px; }
   .hero p { max-width: 300px; }
   .hero p { font-size: 1rem; margin-bottom: 20px; }
-  #schedule { padding-top: 8px; }
+  #schedule { padding-top: 24px; }
 }

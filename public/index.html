@@ -29,6 +29,40 @@
       <a class="btn" href="#schedule">See classes &amp; book</a>
     </div>
 
+    <section class="how-section" id="about">
+      <div class="wrap">
+        <details class="how">
+          <summary>How booking works</summary>
+          <ol class="steps">
+            <li>
+              <details>
+                <summary><span class="step-title">Create an account</span><span class="step-hint">Takes a minute, only once</span></summary>
+                <p>Sign up with your email, phone / WhatsApp number, any injuries and your activity level, so Basma knows who is coming.</p>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary><span class="step-title">Pick your classes</span><span class="step-hint">Select one or more, then tap Book</span></summary>
+                <p>Online booking closes <b data-hours="bookingCutoffHours">2 days</b> before each class. If a class is full, join the waiting list: you'll get an email if a spot opens and have <b data-hours="waitlistOfferHours">12 hours</b> to claim it.</p>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary><span class="step-title">Pay by transfer</span><span class="step-hint">Bank or STC Pay, then upload the receipt</span></summary>
+                <p>Pay straight away or later from My account, any credit you have is used first. Unpaid spots are released <b data-hours="paymentDeadlineHours">1 day</b> before class, and you'll get a reminder before then.</p>
+              </details>
+            </li>
+            <li>
+              <details>
+                <summary><span class="step-title">You're in</span><span class="step-hint">Confirmation email with a calendar invite</span></summary>
+                <p>Basma checks your receipt and you get a confirmation by email. Can't make it? Cancel from My account up to <b data-hours="cancellationHours">12 hours</b> before class and the fee comes back as credit for another class.</p>
+              </details>
+            </li>
+          </ol>
+        </details>
+      </div>
+    </section>
+
     <section id="schedule">
       <div class="wrap">
         <div class="section-head">
@@ -36,17 +70,6 @@
           <p id="location"></p>
         </div>
         <p class="schedule-notice" id="hero-notice" hidden></p>
-
-        <details class="how" id="about">
-          <summary>How booking works</summary>
-          <p id="about-text"></p>
-          <ul>
-            <li><strong>Book</strong> Sign in, select one or more classes and tap Book.</li>
-            <li><strong>Pay</strong> <span id="pay-blurb">Transfer by bank or STC Pay and upload the receipt, now or later.</span></li>
-            <li><strong>Class full?</strong> Join the waiting list and we'll email you if a spot opens.</li>
-            <li><strong>Can't make it?</strong> <span id="cancel-policy">Cancel online and get the fee back as credit.</span></li>
-          </ul>
-        </details>
 
         <div class="week-tabs" role="tablist" id="week-tabs"></div>
         <div id="sessions"><div class="empty">Loading classes…</div></div>

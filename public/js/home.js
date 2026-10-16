@@ -10,15 +10,18 @@ loadStudio().then((studio) => {
   document.title = `${studio.name} — Book a class`;
   document.getElementById('eyebrow').textContent = studio.eyebrow;
   document.getElementById('tagline').textContent = studio.tagline;
-  document.getElementById('about-text').textContent = studio.about;
   document.getElementById('location').textContent = studio.location ? `📍 ${studio.location}` : '';
   if (studio.notice) {
     const n = document.getElementById('hero-notice');
     n.textContent = studio.notice;
     n.hidden = false;
   }
-  document.getElementById('cancel-policy').textContent =
-    `Cancel online up to ${studio.cancellationHours} hours before class and get the fee back as credit.`;
+  // Booking rules in the "How booking works" steps, e.g. 48 → "2 days".
+  for (const b of document.querySelectorAll('[data-hours]')) {
+    const h = studio[b.dataset.hours];
+    if (h === undefined) continue;
+    b.textContent = h % 24 === 0 ? `${h / 24} day${h === 24 ? '' : 's'}` : `${h} hour${h === 1 ? '' : 's'}`;
+  }
   render();
 });
 
